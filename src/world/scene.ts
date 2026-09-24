@@ -73,7 +73,8 @@ export class World {
     s.globe.depthTestAgainstTerrain = true;
     s.globe.maximumScreenSpaceError = opts.quality === 'high' ? 1.5 : opts.quality === 'medium' ? 2 : 3;
     s.globe.tileCacheSize = 400;
-    s.globe.preloadSiblings = true;
+    s.globe.preloadSiblings = false;
+    s.globe.loadingDescendantLimit = 30;
     s.globe.showGroundAtmosphere = true;
     s.fog.enabled = true;
     s.fog.density = 2.0e-4;

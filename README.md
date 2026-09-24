@@ -14,7 +14,7 @@ npm run build      # dist/ 에 정적 빌드 (아무 웹서버로 배포 가능)
 npm test           # 헤드리스 비행 테스트 (이륙 → 상승 → ILS 자동착륙, 호버링 등)
 ```
 
-Chrome / Edge 최신 버전 권장. 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
+Chrome / Edge 최신 버전 권장. `npm run dev`는 첫 실행 때만 Cesium 사전 번들링으로 몇 초 더 걸리며, 가장 빠른 실행은 `npm run build && npm run preview` 입니다. 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
 
 ## 엔진 구성 — 왜 Unity/Unreal이 아닌가
 

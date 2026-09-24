@@ -4,7 +4,7 @@
 import { DEG, RAD, clamp } from '../core/math.ts';
 import { runwayInfluence, type AirportDB, type Runway } from './airports.ts';
 
-const URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
+const TILE_URL = 'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png';
 const MAX_Z = 14;
 
 interface Tile { data: Float32Array | null; promise: Promise<Float32Array | null>; used: number }
@@ -16,8 +16,37 @@ export class ElevationService {
   private ctx: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null = null;
   private lastPhys = 0;
   inflight = 0;
+  private workers: Worker[] = [];
+  private wNext = 0; private reqId = 0;
+  private pending = new Map<number, (d: Float32Array | null) => void>();
 
-  constructor(public db: AirportDB) {}
+  constructor(public db: AirportDB) {
+    try {
+      if (typeof OffscreenCanvas !== 'undefined') {
+        const n = Math.min(4, Math.max(2, (navigator.hardwareConcurrency || 4) >> 1));
+        for (let i = 0; i < n; i++) {
+          const w = new Worker(new URL('./terrainWorker.ts', import.meta.url), { type: 'module' });
+          w.onmessage = (e: MessageEvent<{ id: number; data: Float32Array | null }>) => {
+            const cb = this.pending.get(e.data.id);
+            this.pending.delete(e.data.id);
+            cb?.(e.data.data);
+          };
+          this.workers.push(w);
+        }
+      }
+    } catch { this.workers = []; }
+  }
+
+  private load(url: string): Promise<Float32Array | null> {
+    if (this.workers.length) {
+      const id = ++this.reqId;
+      const w = this.workers[this.wNext++ % this.workers.length];
+      return new Promise(res => { this.pending.set(id, res); w.postMessage({ id, url }); });
+    }
+    return fetch(url).then(r => (r.ok ? r.blob() : Promise.reject(r.status)))
+      .then(b => createImageBitmap(b))
+      .then(img => { const d = this.decode(img); img.close(); return d; });
+  }
 
   private key(z: number, x: number, y: number) { return `${z}/${x}/${y}`; }
 
@@ -48,10 +77,8 @@ export class ElevationService {
     if (t) { t.used = ++this.tick; return t; }
     const tile: Tile = { data: null, used: ++this.tick, promise: Promise.resolve(null) };
     this.inflight++;
-    tile.promise = fetch(URL.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)))
-      .then(r => (r.ok ? r.blob() : Promise.reject(r.status)))
-      .then(b => createImageBitmap(b))
-      .then(img => { tile.data = this.decode(img); img.close(); return tile.data; })
+    tile.promise = this.load(TILE_URL.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)))
+      .then(d => { tile.data = d ?? new Float32Array(256 * 256); return tile.data; })
       .catch(() => { tile.data = new Float32Array(256 * 256); return tile.data; })
       .finally(() => { this.inflight--; });
     this.tiles.set(k, tile);
@@ -125,18 +152,18 @@ export class ElevationService {
   }
 
   /** Preload the tiles around a point (used before spawning). */
-  async preload(lat: number, lon: number) {
+  async preload(lat: number, lon: number, timeoutMs = 2500) {
     const ps: Promise<unknown>[] = [];
-    for (const z of [10, 13]) {
+    for (const z of [9, 13]) {
       const [x, y] = ElevationService.tileXY(lat, lon, z);
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) ps.push(this.tile(z, x + dx, y + dy).promise);
+      ps.push(this.tile(z, x, y).promise);
     }
-    await Promise.race([Promise.all(ps), new Promise(r => setTimeout(r, 8000))]);
+    await Promise.race([Promise.all(ps), new Promise(r => setTimeout(r, timeoutMs))]);
   }
 
   /** Height grid for a geographic rectangle (for the rendered terrain mesh). */
   async heightGrid(west: number, south: number, east: number, north: number, level: number, w: number, h: number): Promise<Float32Array> {
-    const z = clamp(level + 1, 1, MAX_Z);
+    const z = clamp(level, 1, MAX_Z - 1);
     const [x0, y0] = ElevationService.tileXY(north, west, z);
     const [x1, y1] = ElevationService.tileXY(south, east - 1e-9, z);
     const need: Promise<unknown>[] = [];

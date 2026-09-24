@@ -62,7 +62,7 @@ class App {
     this.hud = new HUD($('hudLayer'));
     this.sound.volume = s.volume;
     this.menu.onFly = c => { this.sound.init(); void this.startFlight(c); };
-    this.menu.onPreview = apt => { if (!this.flying) this.world.flyOverview(apt.lat, apt.lon); };
+    this.menu.onPreview = apt => { if (!this.flying) this.world.flyOverview(apt.lat, apt.lon); void this.world.elevation.preload(apt.lat, apt.lon, 10000); };
     this.menu.onRoute = pts => this.world.showRoute(pts);
     this.menu.onResume = () => this.resume();
     this.menu.onSettings = st => {
@@ -139,16 +139,10 @@ class App {
     $('topbar').classList.remove('hidden');
     $('crash').classList.add('hidden');
     $('tbAircraft').textContent = `${def.mfr} ${def.name}`;
-    // wait for terrain tiles around the aircraft
-    const t0 = performance.now();
-    this.world.updateCamera(ac, 0);
-    while (performance.now() - t0 < 12000 && (!this.world.scene.globe.tilesLoaded || this.world.elevation.inflight > 0)) {
-      this.world.updateCamera(ac, 0);
-      await new Promise(r => setTimeout(r, 200));
-      loading(`지형 · 위성영상 로딩 중… ${Math.round((performance.now() - t0) / 1000)}s`);
-    }
-    // re-seat on the (now loaded) ground
-    if (ac.onGround || cfg.start === 'runway' || cfg.start === 'cold') {
+    // Don't block on imagery/terrain streaming: runway height comes from the airport DB, and the
+    // mesh refines while you fly. Only give the tile directly underneath a brief head start.
+    await this.world.elevation.preload(ac.lat, ac.lon, 1200);
+    if (ac.onGround) {
       const g = this.world.elevation.ground(ac.lat, ac.lon);
       ac.alt = g.h + ac.restHeight();
       ac.vel = [0, 0, 0];
@@ -184,10 +178,11 @@ class App {
     };
     if (start === 'runway' || start === 'cold') {
       const p = lineUp(depEnd.end);
-      await this.world.elevation.preload(p.lat, p.lon);
-      const g = this.world.elevation.ground(p.lat, p.lon);
-      ac.place(p.lat, p.lon, g.h + ac.restHeight(), p.hdg, 0);
-      ac.groundH = g.h;
+      void this.world.elevation.preload(p.lat, p.lon);
+      const g = this.world.elevation.ground(p.lat, p.lon); // graded runway height is exact even without tiles
+      const h = g.runway ? g.h : depEnd.end.elev;
+      ac.place(p.lat, p.lon, h + ac.restHeight(), p.hdg, 0);
+      ac.groundH = h;
       const ready = start === 'runway';
       sys.setReady(ready);
       if (ready) { sys.sw.strobe = sys.sw.landing = true; }
@@ -229,8 +224,8 @@ class App {
       altM = dep.elev + (def.fdm === 'rotor' ? 1000 : 3000) * FT;
       spdKt = def.fdm === 'rotor' ? 60 : def.cat === 'glider' ? 50 : Math.min(def.v.vref * 1.5, 250);
     }
-    await this.world.elevation.preload(lat, lon);
-    const ground = this.world.elevation.ground(lat, lon).h;
+    await this.world.elevation.preload(lat, lon, 1500);
+    const ground = Math.max(this.world.elevation.ground(lat, lon).h, start === 'cruise' ? 0 : dep.elev);
     altM = Math.max(altM, ground + 150);
     const a = air(altM);
     const tas = start === 'cruise' ? spdKt * KT : casToTas(spdKt * KT, a);

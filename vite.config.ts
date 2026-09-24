@@ -13,5 +13,7 @@ export default defineConfig(({ command }) => ({
       targets: ['ThirdParty', 'Workers', 'Assets', 'Widgets'].map(d => ({ src: `${cesiumSource}/${d}`, dest: cesiumBaseUrl })),
     }),
   ],
+  optimizeDeps: { include: ['cesium'] },
+  worker: { format: 'es' },
   build: { chunkSizeWarningLimit: 6000, target: 'es2022' },
 }));
