@@ -1,7 +1,7 @@
 // Flight control system: control laws (conventional, Airbus normal law, Boeing C*U, fighter g-command),
 // yaw damper, helicopter SAS, autopilot (lateral / vertical modes), flight director and autothrottle.
 import { DEG, FPM, FT, G0, KT, NM, PID, RAD, approach, clamp, moveToward, wrap180 } from '../core/math.ts';
-import { alongTrack, bearing, crossTrack, distance, type LatLon } from '../core/geo.ts';
+import { alongTrack, bearing, crossTrack, distance, magVar, type LatLon } from '../core/geo.ts';
 import type { Aircraft } from './fdm.ts';
 
 export interface PilotInput { pitch: number; roll: number; yaw: number; trim: number; collective: number }
@@ -91,6 +91,9 @@ export class FCS {
   private heliAltPid = new PID(0.0025, 0.0006, 0, 0.25, 0.4);
   private lastIas = 0; private accel = 0;
   ilsTuned = false;
+  /** magnetic variation at the aircraft (deg, east +). Selected headings are magnetic. */
+  magv = 0;
+  get hdgM() { return ((this.ac.heading - this.magv) % 360 + 360) % 360; }
   ils: ReturnType<typeof ilsDeviation> | null = null;
   gsCaptured = false;
 
@@ -121,7 +124,7 @@ export class FCS {
     this.ap = on;
     if (on) {
       if (a.onGround && !a.isRotor) { this.ap = false; this.msg = 'AP: 지상에서는 연결할 수 없습니다'; return; }
-      if (this.lat === 'OFF') { this.lat = 'HDG'; this.selHdg = Math.round(a.heading); }
+      if (this.lat === 'OFF') { this.lat = 'HDG'; this.selHdg = Math.round(this.hdgM) || 360; }
       if (this.vert === 'OFF') {
         this.vert = 'VS'; this.selVs = Math.round(a.vs / FPM / 100) * 100;
         if (Math.abs(this.selVs) < 200) { this.vert = 'ALT'; this.selAlt = Math.round(a.alt / FT / 100) * 100; this.altHold = this.selAlt; }
@@ -138,7 +141,7 @@ export class FCS {
   setLat(m: LatMode) {
     if (m === 'LOC') { this.latArmed = this.lat === 'LOC' ? null : 'LOC'; return; }
     this.lat = this.lat === m ? 'HDG' : m;
-    if (this.lat === 'HDG' && m !== 'HDG') this.selHdg = Math.round(this.ac.heading);
+    if (this.lat === 'HDG' && m !== 'HDG') this.selHdg = Math.round(this.hdgM) || 360;
   }
   setVert(m: VertMode) {
     const a = this.ac;
@@ -161,7 +164,7 @@ export class FCS {
   toga() {
     const a = this.ac;
     this.vert = 'TOGA'; this.lat = a.onGround ? 'RWY' : 'GA';
-    this.selHdg = Math.round(a.heading);
+    this.selHdg = Math.round(this.hdgM) || 360;
     if (this.hasAthr) this.athr = 'TOGA';
     this.flare = false; this.gsCaptured = false; this.latArmed = null; this.vertArmed = null;
   }
@@ -176,6 +179,7 @@ export class FCS {
     const a = this.ac;
     if (this.apDisconnectWarn > 0) this.apDisconnectWarn -= dt;
     const iasKt = a.ias / KT;
+    this.magv = magVar(a.lat, a.lon);
     if (this.lastIas > 0) this.accel = approach(this.accel, clamp((iasKt - this.lastIas) / Math.max(dt, 1e-3), -20, 20), 0.6, dt);
     this.lastIas = iasKt;
 
@@ -401,7 +405,7 @@ export class FCS {
     const V = Math.max(a.tas, 30);
     const altFt = a.alt / FT;
     let roll = 0, pitch = a.theta * RAD;
-    const hdg = a.heading;
+    const hdg = this.hdgM;
     const bankLim = this.bankLimit;
     const courseToRoll = (desiredTrack: number) => {
       const err = wrap180(desiredTrack - a.track);
@@ -545,7 +549,7 @@ export class FCS {
     if (this.ap && !a.onGround) {
       // attitude autopilot with HDG / ALT / IAS / VS upper modes
       let rollT = 0;
-      if (this.lat === 'HDG' || this.lat === 'OFF') rollT = clamp(wrap180(this.selHdg - a.heading) * 1.0, -20, 20);
+      if (this.lat === 'HDG' || this.lat === 'OFF') rollT = clamp(wrap180(this.selHdg - this.hdgM) * 1.0, -20, 20);
       if (this.lat === 'NAV' && this.plan.to) rollT = clamp(wrap180(bearing(a, this.plan.to) - a.track) * 1.0, -20, 20);
       const ias = a.ias / KT;
       const pitchT = ias > 25 || this.selSpd > 25 ? clamp(-(this.selSpd - ias) * 0.3, -12, 10) : 0;

@@ -49,7 +49,8 @@ export function deriveAero(ac: AircraftDef): AeroModel {
   const cat = ac.cat;
   const fighter = ac.cockpit === 'fighter';
   const eOsw = clamp(1.78 * (1 - 0.045 * AR ** 0.68) - 0.64 - 0.04 * Math.min(sweep, 40) / 30, 0.6, 0.9);
-  const CLa = liftSlope(AR, sweep);
+  // fighters: LEX/strake, body lift and automatic leading-edge flaps raise the effective lift slope
+  const CLa = liftSlope(AR, sweep) * (fighter && ac.tail !== 'delta' ? 1.7 : 1);
   const a0 = (ac.cat === 'glider' ? -3.5 : fighter ? -1 : ac.tail === 'delta' ? 0 : ac.eng.t === 'fan' ? -3.2 : -2.4) * DEG;
 
   const mRefClean = ac.m.mtow;

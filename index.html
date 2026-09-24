@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>SkyLine Flight Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=B612+Mono:wght@400;700&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <div id="world"></div>
+  <div id="fx"><div id="cloudfx"></div><div id="rainfx"></div><div id="blackout"></div></div>
+  <div id="hudLayer"></div>
+
+  <header id="topbar" class="hidden">
+    <div class="tb-left"><span id="tbAircraft"></span><span id="tbPos" class="dim"></span></div>
+    <div class="tb-mid">
+      <span id="tbUtc"></span><span id="tbRate"></span><span id="tbPause" class="warn hidden">PAUSED</span>
+    </div>
+    <div class="tb-right">
+      <div class="seg" id="viewSeg">
+        <button data-view="cockpit" title="1">조종석</button><button data-view="cockpit-hud" title="2">HUD</button>
+        <button data-view="chase" title="3">외부</button><button data-view="tower" title="4">관제탑</button>
+        <button data-view="flyby" title="5">플라이바이</button><button data-view="free" title="6">자유</button>
+      </div>
+      <button id="btnOverhead" title="O">시스템</button>
+      <button id="btnChecklist" title="C">체크리스트</button>
+      <button id="btnMap" title="M">지도</button>
+      <button id="btnFms">FMS</button>
+      <button id="btnMenu" title="Esc">메뉴</button>
+    </div>
+  </header>
+
+  <section id="panel" class="hidden">
+    <div id="mcp"></div>
+    <div id="dus"></div>
+    <div id="pedestal"></div>
+  </section>
+
+  <div id="overhead" class="window hidden"><div class="win-head">OVERHEAD / SYSTEMS<button class="close">×</button></div><div class="win-body"></div></div>
+  <div id="checklist" class="window hidden"><div class="win-head">CHECKLIST<button class="close">×</button></div><div class="win-body"></div></div>
+  <div id="mapwin" class="window hidden"><div class="win-head">NAV MAP<button class="close">×</button></div><div class="win-body"></div></div>
+  <div id="fmswin" class="window hidden"><div class="win-head">FMS / RADIO<button class="close">×</button></div><div class="win-body"></div></div>
+
+  <div id="toast"></div>
+  <div id="crash" class="overlay hidden"><div class="card"><h2>SIMULATION STOPPED</h2><p id="crashReason"></p><div class="row"><button id="crashRetry" class="primary">같은 조건으로 재시작</button><button id="crashMenu">메뉴로</button></div></div></div>
+  <div id="loading" class="overlay"><div class="card"><div class="spinner"></div><p id="loadingText">데이터베이스 로딩 중…</p></div></div>
+
+  <main id="menu" class="hidden"></main>
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>

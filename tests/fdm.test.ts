@@ -66,7 +66,7 @@ function flightTest(id: string, opts: { cruiseFt: number; alt?: number; climbSpd
   // heading change 180 -> turning back east
   fcs.selHdg = 90; fcs.lat = 'HDG';
   run(120);
-  check(`${id} heading`, Math.abs(((a.heading - 90 + 540) % 360) - 180) < 5 && Math.abs(a.alt / FT - opts.cruiseFt) < 150, `hdg ${a.heading.toFixed(0)} alt ${(a.alt / FT).toFixed(0)} bank ${(a.phi * RAD).toFixed(1)}`);
+  check(`${id} heading`, Math.abs(((fcs.hdgM - 90 + 540) % 360) - 180) < 5 && Math.abs(a.alt / FT - opts.cruiseFt) < 150, `hdg ${a.heading.toFixed(0)} alt ${(a.alt / FT).toFixed(0)} bank ${(a.phi * RAD).toFixed(1)}`);
   // speed change
   fcs.selSpd = Math.round(def.v.vref * 1.45);
   if (!fcs.hasAthr) for (const c of a.engineCmd) c.throttle = 0.55;
