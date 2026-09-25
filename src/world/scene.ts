@@ -64,7 +64,11 @@ export class World {
       animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false,
       sceneModePicker: false, navigationHelpButton: false, fullscreenButton: false, infoBox: false,
       selectionIndicator: false, shouldAnimate: true, requestRenderMode: false,
-      showRenderLoopErrors: false, // handled below: recover instead of freezing the screen
+      // We drive rendering ourselves (renderFrame) so that *every* exception — including ones thrown
+      // outside scene.render (clock tick, camera tweens, resize), which Cesium's own loop answers by
+      // stopping forever — is caught, reported, and rendering simply continues on the next frame.
+      useDefaultRenderLoop: false,
+      showRenderLoopErrors: false,
       msaaSamples: opts.quality === 'high' ? 4 : 1,
       contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
@@ -108,6 +112,7 @@ export class World {
    */
   setImagery(src: ImagerySource, chain: ImagerySource[] = []) {
     const gen = ++this.imageryGen;
+    this.lastImagery = [...chain, src].join('→');
     const tried = [...chain, src];
     const next = (): ImagerySource | null => (['esri', 'sentinel2', 'osm'] as ImagerySource[]).find(s => !tried.includes(s)) ?? null;
     // Per-tile fetch failures surface on the *imagery provider's* errorEvent, not the ImageryLayer's
@@ -587,14 +592,39 @@ export class World {
     if (!parts.length) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(Object.prototype.toString.call(e)); } }
     return parts.join(' ');
   }
-  private handleRenderError(err: unknown) {
+  /** Render one frame; never lets an exception stop rendering. Call once per animation frame. */
+  renderFrame() {
+    try {
+      this.viewer.resize();
+      this.viewer.render();
+      this.framesOk++;
+    } catch (e) {
+      this.handleRenderError(e, 'frame');
+    }
+  }
+  framesOk = 0;
+  errorsTotal = 0;
+  /** distinct errors seen (most recent last), for the on-screen diagnostics panel */
+  errorLog: { msg: string; stack: string; where: string; count: number; first: number; last: number }[] = [];
+  onPersistentError: (msg: string) => void = () => {};
+  private persistentShown = false;
+
+  private handleRenderError(err: unknown, where = 'scene') {
     const msg = World.describeError(err);
-    console.error('Render error:', msg, err);
-    // Benign race: an imagery layer's async provider settles just after the layer was replaced
-    // (e.g. an imagery-source switch or its own error fallback) and is destroyed by then. The
-    // switch's own explicit message has already told the user what happened — resume quietly.
-    if (/was destroyed/i.test(msg)) { setTimeout(() => { this.viewer.useDefaultRenderLoop = true; }, 50); return; }
+    const stack = (err as { stack?: string })?.stack ?? '';
     const now = performance.now();
+    this.errorsTotal++;
+    let entry = this.errorLog.find(x => x.msg === msg);
+    if (!entry) {
+      entry = { msg, stack, where, count: 0, first: now, last: now };
+      this.errorLog.push(entry);
+      if (this.errorLog.length > 12) this.errorLog.shift();
+      console.error('Render error:', msg, err);
+    }
+    entry.count++; entry.last = now;
+    // A lone "was destroyed" is the benign race of an imagery layer's async provider settling after
+    // the layer was replaced — only treat it as a real problem if it keeps happening.
+    if (/was destroyed/i.test(msg) && entry.count < 20) return;
     this.errTimes = this.errTimes.filter(t => now - t < 10000);
     this.errTimes.push(now);
     // progressively disable optional features if the error keeps coming back
@@ -605,10 +635,43 @@ export class World {
       if (this.degraded === 2) { this.scene.postProcessStages.fxaa.enabled = false; this.lights.show = false; this.rwyLights.show = false; if (this.tileset) this.tileset.show = false; this.scene.globe.show = true; }
       if (this.degraded === 3) { this.setImageryFallback(); }
     }
-    const fatal = this.degraded >= 3 && this.errTimes.length >= 3;
-    this.onRenderIssue(msg, fatal);
-    if (!fatal) setTimeout(() => { this.viewer.useDefaultRenderLoop = true; }, 50); // resume rendering
+    this.onRenderIssue(msg, false);
+    // still failing after every optional layer was switched off: put the actual error on screen
+    if (this.degraded >= 3 && entry.count > 30 && !this.persistentShown) {
+      this.persistentShown = true;
+      this.onPersistentError(msg);
+    }
   }
+
+  /** Snapshot of renderer / data state for the diagnostics panel. */
+  diagnostics(): Record<string, string> {
+    const gl = (this.scene as unknown as { context: { _gl?: WebGLRenderingContext; webgl2?: boolean } }).context;
+    const g = gl._gl;
+    let renderer = '?';
+    try {
+      const ext = g?.getExtension('WEBGL_debug_renderer_info');
+      renderer = ext ? String(g!.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : String(g?.getParameter(g.RENDERER));
+    } catch { /* ignore */ }
+    const layers: string[] = [];
+    for (let i = 0; i < this.viewer.imageryLayers.length; i++) {
+      const l = this.viewer.imageryLayers.get(i);
+      layers.push(`${i}:${l.ready ? (l.imageryProvider as object).constructor.name : '(loading)'}${l.show ? '' : '(hidden)'}`);
+    }
+    const t = Cesium.JulianDate.toDate(this.viewer.clock.currentTime);
+    return {
+      'Browser': navigator.userAgent,
+      'WebGL': `${gl.webgl2 ? 'WebGL2' : 'WebGL1'} · ${renderer} · maxTex ${g?.getParameter(g.MAX_TEXTURE_SIZE) ?? '?'}`,
+      'Canvas': `${this.scene.canvas.width}×${this.scene.canvas.height} (DPR ${devicePixelRatio})`,
+      'Cesium': `${(Cesium as unknown as { VERSION?: string }).VERSION ?? '?'} · base ${(window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL ?? '?'}`,
+      'Frames': `ok ${this.framesOk} · errors ${this.errorsTotal} · degraded ${this.degraded}`,
+      'Clock': `${t.toISOString()} · animate ${this.viewer.clock.shouldAnimate}`,
+      'Globe': `show ${this.scene.globe.show} · tilesLoaded ${this.scene.globe.tilesLoaded} · terrain fetch ${this.elevation.inflight}`,
+      'Imagery': `${this.lastImagery} · layers ${layers.join(', ')}`,
+      '3D Tiles': this.tileset ? 'on' : 'off',
+      'Sky': `atmosphere ${!!this.scene.skyAtmosphere?.show} · skybox ${!!this.scene.skyBox?.show}`,
+    };
+  }
+  lastImagery = '';
   private setImageryFallback() {
     const layers = this.viewer.imageryLayers;
     layers.removeAll();

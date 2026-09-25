@@ -59,12 +59,13 @@ export class Menu {
           <button data-tab="settings" class="${this.tab === 'settings' ? 'on' : ''}">설정</button>
           <button data-tab="help" class="${this.tab === 'help' ? 'on' : ''}">조작법</button>
         </div>
-        <div>${canResume ? '<button id="resume">비행 재개 (Esc)</button>' : ''}</div>
+        <div><button id="menuDiag" title="렌더링 진단 정보">진단</button> ${canResume ? '<button id="resume">비행 재개 (Esc)</button>' : ''}</div>
       </header>
       <div class="m-col" id="acList"></div>
       <div class="m-mid"><div class="spec" id="acSpec"></div></div>
       <div class="m-col right" id="rightCol"></div>`;
     this.el.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => b.onclick = () => { this.tab = b.dataset.tab as never; this.render(canResume); });
+    this.el.querySelector<HTMLButtonElement>('#menuDiag')!.onclick = () => this.onDiag();
     const res = this.el.querySelector<HTMLButtonElement>('#resume');
     if (res) res.onclick = () => this.onResume?.();
     this.renderAircraftList();
@@ -320,6 +321,7 @@ export class Menu {
     };
   }
   onSettings: (s: Settings) => void = () => {};
+  onDiag: () => void = () => {};
 }
 
 function rangeHours(a: ReturnType<typeof getAircraft>) {

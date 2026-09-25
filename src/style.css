@@ -156,3 +156,11 @@ body.nopanel #touch { bottom: 0; }
 #tbAircraft { overflow: hidden; text-overflow: ellipsis; max-width: 22vw; }
 @media (max-width: 1400px) { #tbPos { display: none; } #topbar button { padding: 3px 6px; font-size: 11px; } #topbar { gap: 4px; } }
 @media (max-width: 1100px) { #tbAircraft { display: none; } }
+
+#diagwin { top: 50px; left: 50%; transform: translateX(-50%); width: min(720px, 94vw); z-index: 60; }
+#diagwin td:first-child { width: 90px; }
+#diagwin td { word-break: break-all; font-family: "B612 Mono", monospace; font-size: 11px; }
+.diag-err { border-left: 3px solid var(--err); padding: 4px 8px; margin: 4px 0; font-size: 12px; background: #1a0d0d; }
+.diag-err pre { margin: 4px 0 0; font-size: 10px; color: var(--dim); white-space: pre-wrap; word-break: break-all; }
+#errBanner { position: absolute; top: 40px; left: 50%; transform: translateX(-50%); z-index: 55; background: #4a0d0dee; border: 1px solid var(--err); color: #ffd0d0;
+  padding: 8px 12px; border-radius: 6px; display: flex; gap: 10px; align-items: center; max-width: 92vw; font-size: 13px; }

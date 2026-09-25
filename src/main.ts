@@ -70,12 +70,17 @@ class App {
       if (fatal) { loading(`그래픽 오류로 렌더링을 계속할 수 없습니다: ${msg}`); document.querySelector<HTMLElement>('#loading .spinner')?.style.setProperty('display', 'none'); return; }
       if (performance.now() - lastIssue > 15000) { lastIssue = performance.now(); toast(`렌더링 오류 자동 복구: ${msg.slice(0, 120)}`); }
     };
+    this.world.onPersistentError = msg => {
+      $('errBannerText').textContent = `3D 렌더링 오류가 계속 발생합니다: ${msg.slice(0, 160)}`;
+      $('errBanner').classList.remove('hidden');
+    };
     this.hud = new HUD($('hudLayer'));
     this.sound.volume = s.volume;
     this.menu.onFly = c => { this.sound.init(); void this.startFlight(c); };
     this.menu.onPreview = apt => { if (!this.flying) this.world.flyOverview(apt.lat, apt.lon); void this.world.elevation.preload(apt.lat, apt.lon, 10000); };
     this.menu.onRoute = pts => this.world.showRoute(pts);
     this.menu.onResume = () => this.resume();
+    this.menu.onDiag = () => this.toggleDiag();
     this.menu.onSettings = st => {
       this.sound.volume = st.volume;
       this.world.opts = { ...this.world.opts, ...st };
@@ -393,6 +398,8 @@ class App {
     $('btnMap').onclick = () => this.action('map');
     $('btnFms').onclick = () => this.action('fms');
     $('btnMenu').onclick = () => this.openMenu();
+    $('btnDiag').onclick = () => this.toggleDiag();
+    $('errBannerOpen').onclick = () => { $('diagwin').classList.remove('hidden'); this.diagT = 0; this.updateDiag(); };
     $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
     $('crashRetry').onclick = () => { if (this.cfg) void this.startFlight(this.cfg); };
     $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.flying = false; this.touch.show(false, false); document.body.classList.remove('flying'); $('topbar').classList.add('hidden'); this.layout(); this.menu.show(false); };
@@ -437,7 +444,7 @@ class App {
     const dtReal = clamp((t - (this.last || t)) / 1000, 0, 0.1);
     this.last = t;
     if (dtReal > 0) this.fps += (1 / dtReal - this.fps) * 0.05;
-    if (!this.flying || !this.ac) return;
+    if (!this.flying || !this.ac) { this.world.renderFrame(); this.updateDiag(); return; }
     const ac = this.ac, f = this.fcs, s = this.sys, c = this.controls;
     const rate = RATES[this.rateIdx];
     const running = !this.paused && !ac.crash && !this.menu.visible;
@@ -533,6 +540,29 @@ class App {
     if (this.wasAp && !f.ap) events.push('apoff');
     this.wasAp = f.ap;
     this.sound.update(ac, w.view === 'cockpit' || w.view === 'cockpit-hud', !running, events);
+    w.renderFrame();
+    this.updateDiag();
+  }
+
+  // ───────────────────────── diagnostics panel ─────────────────────────
+  private diagT = 0;
+  private updateDiag() {
+    const win = $('diagwin');
+    if (win.classList.contains('hidden')) return;
+    if (performance.now() - this.diagT < 500) return;
+    this.diagT = performance.now();
+    const d = this.world.diagnostics();
+    const esc = (x: string) => x.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]!));
+    const rows = Object.entries(d).map(([k, v]) => `<tr><td>${k}</td><td>${esc(v)}</td></tr>`).join('');
+    const errs = this.world.errorLog.slice().reverse().map(e =>
+      `<div class="diag-err"><b>×${e.count}</b> [${e.where}] ${esc(e.msg)}<pre>${esc(e.stack.split('\n').slice(0, 6).join('\n'))}</pre></div>`).join('') || '<div class="dim">렌더링 오류 없음</div>';
+    win.querySelector('.win-body')!.innerHTML = `<table class="help-table">${rows}</table><h4 style="margin:10px 0 4px">최근 렌더링 오류</h4>${errs}
+      <p class="note">문제가 있으면 이 창을 캡처해서 보내주세요.</p>`;
+  }
+  toggleDiag() {
+    $('diagwin').classList.toggle('hidden');
+    this.diagT = 0;
+    this.updateDiag();
   }
 }
 
