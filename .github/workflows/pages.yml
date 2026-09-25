@@ -22,6 +22,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npx vite build
+      # Cesium workers/assets must sit at dist/cesium/* or the globe silently never draws
+      - run: test -f dist/cesium/Workers/createVerticesFromHeightmap.js && test -d dist/cesium/Assets/Textures/NaturalEarthII
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

@@ -10,7 +10,8 @@ export default defineConfig(({ command }) => ({
   define: { CESIUM_BASE_URL: JSON.stringify(command === 'serve' ? `/${cesiumSource}` : cesiumBaseUrl) },
   plugins: [
     viteStaticCopy({
-      targets: ['ThirdParty', 'Workers', 'Assets', 'Widgets'].map(d => ({ src: `${cesiumSource}/${d}`, dest: cesiumBaseUrl })),
+      // stripBase: v4 otherwise keeps the whole node_modules/cesium/Build/Cesium/ prefix under dist/cesium
+      targets: ['ThirdParty', 'Workers', 'Assets', 'Widgets'].map(d => ({ src: `${cesiumSource}/${d}/**/*`, dest: cesiumBaseUrl, rename: { stripBase: 4 } })),
     }),
   ],
   optimizeDeps: { include: ['cesium'] },

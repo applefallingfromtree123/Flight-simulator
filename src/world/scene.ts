@@ -73,6 +73,8 @@ export class World {
       contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
     const v = this.viewer;
+    // otherwise Viewer freezes the clock (sun, time of day) while any data source is still loading
+    v.allowDataSourcesToSuspendAnimation = false;
     this.scene = v.scene;
     (v.cesiumWidget.creditContainer as HTMLElement).classList.add('credits');
     this.setImagery(opts.imagery);
@@ -665,7 +667,7 @@ export class World {
       'Cesium': `${(Cesium as unknown as { VERSION?: string }).VERSION ?? '?'} · base ${(window as unknown as { CESIUM_BASE_URL?: string }).CESIUM_BASE_URL ?? '?'}`,
       'Frames': `ok ${this.framesOk} · errors ${this.errorsTotal} · degraded ${this.degraded}`,
       'Clock': `${t.toISOString()} · animate ${this.viewer.clock.shouldAnimate}`,
-      'Globe': `show ${this.scene.globe.show} · tilesLoaded ${this.scene.globe.tilesLoaded} · terrain fetch ${this.elevation.inflight}`,
+      'Globe': `show ${this.scene.globe.show} · tilesLoaded ${this.scene.globe.tilesLoaded} · drawn ${(this.scene.globe as unknown as { _surface: { _tilesToRender: unknown[] } })._surface._tilesToRender.length} · terrain fetch ${this.elevation.inflight}`,
       'Imagery': `${this.lastImagery} · layers ${layers.join(', ')}`,
       '3D Tiles': this.tileset ? 'on' : 'off',
       'Sky': `atmosphere ${!!this.scene.skyAtmosphere?.show} · skybox ${!!this.scene.skyBox?.show}`,
