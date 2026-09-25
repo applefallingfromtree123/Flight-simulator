@@ -11,7 +11,7 @@ import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
 
-export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'osm';
+export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'sentinel2' | 'osm';
 export interface SceneOptions {
   imagery: ImagerySource;
   googleKey: string;
@@ -99,7 +99,18 @@ export class World {
     if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
   }
 
+  private imageryGen = 0;
   setImagery(src: ImagerySource) {
+    const gen = ++this.imageryGen;
+    // Guards a fallback callback against firing after this layer has been superseded (and destroyed)
+    // by a later setImagery call — without this, Cesium throws "This object was destroyed" instead.
+    const fallback = (layer: Cesium.ImageryLayer, msg: string) => {
+      layer.errorEvent.addEventListener(() => {
+        if (gen !== this.imageryGen) return;
+        this.onRenderIssue(msg, false);
+        this.setImagery('esri');
+      });
+    };
     const layers = this.viewer.imageryLayers;
     layers.removeAll();
     // offline base layer bundled with Cesium (always available, shows through while tiles stream)
@@ -108,10 +119,26 @@ export class World {
       // Official Google Maps Platform 2D satellite tiles (Map Tiles API key required)
       const layer = Cesium.ImageryLayer.fromProviderAsync(
         Cesium.Google2DImageryProvider.fromUrl({ key: this.opts.googleKey, mapType: 'satellite', language: 'ko', region: 'KR' }) as unknown as Promise<Cesium.ImageryProvider>, {});
-      layer.errorEvent.addEventListener(() => { this.onRenderIssue('Google 위성지도를 불러오지 못했습니다 (API 키 / Map Tiles API 활성화 확인) — Esri로 전환', false); this.setImagery('esri'); });
+      fallback(layer, 'Google 위성지도를 불러오지 못했습니다 (API 키 / Map Tiles API 활성화 확인) — Esri로 전환');
       layers.add(layer);
     } else if (src === 'bing-ion' && this.opts.ionToken) {
-      layers.add(Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(2), {}));
+      const layer = Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(2), {});
+      fallback(layer, 'Bing 위성지도를 불러오지 못했습니다 (ion 토큰 확인) — Esri로 전환');
+      layers.add(layer);
+    } else if (src === 'bing-ion' && !this.opts.ionToken) {
+      this.onRenderIssue('Bing 위성지도를 쓰려면 설정에 Cesium ion 토큰을 입력하세요 — Esri로 전환', false);
+      this.setImagery('esri');
+      return;
+    } else if (src === 'sentinel2') {
+      // Sentinel-2 cloudless (EOX IT Services) — free, no key, ~10 m/px global mosaic, genuinely
+      // independent satellite source from Esri/Google. Coarser up close (good to ~FL100 and above).
+      const layer = new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+        url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg',
+        maximumLevel: 14,
+        credit: new Cesium.Credit('Sentinel-2 cloudless by EOX IT Services GmbH (Contains modified Copernicus Sentinel data)'),
+      }));
+      fallback(layer, 'Sentinel-2 위성지도를 불러오지 못했습니다 — Esri로 전환');
+      layers.add(layer);
     } else if (src === 'osm') {
       layers.add(new Cesium.ImageryLayer(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })));
     } else {
@@ -504,6 +531,10 @@ export class World {
   private handleRenderError(err: unknown) {
     const msg = World.describeError(err);
     console.error('Render error:', msg, err);
+    // Benign race: an imagery layer's async provider settles just after the layer was replaced
+    // (e.g. an imagery-source switch or its own error fallback) and is destroyed by then. The
+    // switch's own explicit message has already told the user what happened — resume quietly.
+    if (/was destroyed/i.test(msg)) { setTimeout(() => { this.viewer.useDefaultRenderLoop = true; }, 50); return; }
     const now = performance.now();
     this.errTimes = this.errTimes.filter(t => now - t < 10000);
     this.errTimes.push(now);

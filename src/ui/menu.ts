@@ -246,14 +246,23 @@ export class Menu {
       <div class="sec"><h3>지형 · 위성영상</h3>
         <div class="field"><label>위성영상 소스</label><select id="img">
           <option value="esri">Esri World Imagery (위성, 키 불필요 · 기본)</option>
+          <option value="sentinel2">Sentinel-2 Cloudless (위성, 키 불필요 · 유럽우주국 원본)</option>
+          <option value="bing-ion">Bing Maps Aerial via Cesium ion (MSFS와 동일 소스, 무료 가입만 필요)</option>
           <option value="google">Google 위성지도 (Google Maps API 키 필요)</option>
-          <option value="bing-ion">Bing Maps Aerial via Cesium ion (MSFS와 동일 소스, 토큰 필요)</option>
           <option value="osm">OpenStreetMap (지도)</option></select></div>
-        <div class="field"><label>Cesium ion 액세스 토큰 (선택)</label><input id="ion" value="${s.ionToken}" placeholder="eyJ..."></div>
+        <div class="field"><label>Cesium ion 액세스 토큰</label><input id="ion" value="${s.ionToken}" placeholder="eyJ... (ion.cesium.com 무료 가입 → Access Tokens)"></div>
         <div class="field"><label>Google Maps Platform API 키 (Google 위성지도 · 3D 도시에 사용)</label>
           <input id="gkey" value="${s.googleKey}" placeholder="AIza... (Google Cloud 콘솔에서 Map Tiles API 활성화)"></div>
         <div class="field"><label><input type="checkbox" id="pr" ${s.photoreal ? 'checked' : ''}> Google Photorealistic 3D Tiles (실사 3D 도시 · 포토그래메트리, 같은 키 사용)</label></div>
-        <p class="note">Google 위성지도는 Google 약관상 공식 Map Tiles API 키가 필요합니다 (월 무료 사용량 있음 · console.cloud.google.com → Map Tiles API 사용 설정 → API 키 발급). 키가 없으면 같은 급의 위성사진(Maxar 등)을 쓰는 Esri 위성지도가 기본으로 사용됩니다.<br>지형 고도는 AWS Terrain Tiles(SRTM 기반, 전 세계)를 실시간 스트리밍하며, 활주로는 실제 활주로 좌표/표고로 평탄화됩니다. Google 3D 타일을 켜면 MSFS의 포토그래메트리 도시와 유사한 실사 3D 지형·건물이 표시됩니다.</p>
+        <p class="note">
+          위성지도 원본을 <b>무료로</b> 더 받을 수 있는 방법:<br>
+          • <b>Esri World Imagery</b> (기본) — Maxar 등 상용 위성사진, 키 없이 바로 사용. 대부분 지역에서 이미 Google 지도와 비슷한 해상도입니다.<br>
+          • <b>Sentinel-2 Cloudless</b> — 유럽우주국 Sentinel-2 위성의 무료 공개 원본(EOX 가공). 키 불필요, 해상도는 약 10m/px로 낮은 고도에서는 Esri보다 흐리지만 완전히 다른 원본입니다.<br>
+          • <b>Bing Maps Aerial</b> — <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener">ion.cesium.com</a>에서 <b>신용카드 없이</b> 이메일만으로 무료 가입하면 발급되는 토큰만 넣으면 됩니다. MSFS 2020이 쓰는 것과 같은 소스로, 셋 중 화질이 가장 좋습니다.<br>
+          • <b>Google 위성지도</b> — Google Cloud 계정과 결제수단 등록이 필요한 대신(무료 사용량 있음), 최신 갱신 빈도가 가장 좋습니다.<br>
+          키가 없거나 잘못되면 자동으로 Esri로 되돌아갑니다.
+        </p>
+        <p class="note">지형 고도는 AWS Terrain Tiles(SRTM 기반, 전 세계)를 실시간 스트리밍하며, 활주로는 실제 활주로 좌표/표고로 평탄화됩니다. Google 3D 타일을 켜면 MSFS의 포토그래메트리 도시와 유사한 실사 3D 지형·건물이 표시됩니다.</p>
       </div>
       <div class="sec"><h3>그래픽 · 사운드</h3>
         <div class="frow"><div class="field"><label>품질</label><select id="q"><option value="low">낮음</option><option value="medium">중간</option><option value="high">높음 (MSAA)</option></select></div>
