@@ -55,7 +55,11 @@ class App {
 
   async boot() {
     loading('공항 · 항법 데이터베이스 로딩 중…');
-    await this.db.load();
+    try {
+      await this.db.load();
+    } catch (e) {
+      throw new Error(`공항 데이터(data/airports.json)를 불러오지 못했습니다 — ${(e as Error).message}`);
+    }
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });
@@ -76,6 +80,7 @@ class App {
     this.controls.onAction = a => this.action(a);
     this.bindUi();
     loading(null);
+    (window as unknown as { __booted: boolean }).__booted = true;
     this.menu.show(false);
     requestAnimationFrame(t => this.frame(t));
   }
@@ -516,4 +521,9 @@ class App {
 
 const app = new App();
 (window as unknown as { sky: App }).sky = app;
-app.boot().catch(e => { console.error(e); loading('오류: ' + (e?.message ?? e)); });
+app.boot().catch(e => {
+  console.error(e);
+  const webgl = !!document.createElement('canvas').getContext('webgl2');
+  loading('오류: ' + (e?.message ?? e) + (webgl ? '' : ' — 이 브라우저/그래픽 드라이버는 WebGL2를 지원하지 않습니다 (Chrome/Edge 최신 버전, 하드웨어 가속 켜기)'));
+  document.querySelector<HTMLElement>('#loading .spinner')?.style.setProperty('display', 'none');
+});

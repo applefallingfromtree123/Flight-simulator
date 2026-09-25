@@ -48,6 +48,40 @@
   <div id="loading" class="overlay"><div class="card"><div class="spinner"></div><p id="loadingText">데이터베이스 로딩 중…</p></div></div>
 
   <main id="menu" class="hidden"></main>
+  <script>
+    // Boot watchdog (classic script: runs even when module scripts are blocked).
+    (function () {
+      var help = '<div style="text-align:left;line-height:1.7;font-size:13px;margin-top:10px">' +
+        '<b>이 게임은 웹 서버로 실행해야 합니다.</b><br>' +
+        'index.html 파일을 직접 열면(더블클릭, 파일 미리보기) 브라우저 보안 정책 때문에 실행되지 않습니다.<br><br>' +
+        '▶ <b>Windows</b>: 폴더의 <code>start.bat</code> 더블클릭<br>' +
+        '▶ <b>macOS</b>: <code>start.command</code> 더블클릭<br>' +
+        '▶ <b>터미널</b>: <code>npm install</code> → <code>npm start</code><br>' +
+        '<span style="color:#8593a3">(Node.js LTS 필요: https://nodejs.org)</span></div>';
+      function show(html) {
+        var t = document.getElementById('loadingText'); if (t) t.innerHTML = html;
+        var sp = document.querySelector('#loading .spinner'); if (sp) sp.style.display = 'none';
+      }
+      if (location.protocol === 'file:') {
+        // stylesheets are blocked on file:// too — replace the whole page with a self-styled notice
+        document.addEventListener('DOMContentLoaded', function () {
+          document.body.innerHTML = '<div style="position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#0b0e12;color:#dfe6ee;font-family:system-ui,sans-serif">' +
+            '<div style="max-width:520px;padding:28px 34px;background:#11161c;border:1px solid #263241;border-radius:8px">' +
+            '<div style="font:600 18px monospace;letter-spacing:3px;margin-bottom:6px">SKY<span style="color:#3aa0ff">LINE</span></div>' +
+            '<b style="color:#ffb020">파일로 직접 열었습니다</b>' + help + '</div></div>';
+        });
+        return;
+      }
+      window.addEventListener('error', function (e) {
+        if (window.__booted) return;
+        var src = e.target && (e.target.src || e.target.href);
+        show('<b style="color:#ff4d4d">로딩 실패</b><br>' + (e.message || ('불러오지 못함: ' + (src || '스크립트'))) + help);
+      }, true);
+      setTimeout(function () {
+        if (!window.__booted) show('로딩이 오래 걸리고 있습니다… (첫 실행은 최대 30초)<br><span style="font-size:11px;color:#8593a3">계속 멈춰 있으면 F12 → Console 탭의 빨간 오류를 확인하세요.</span>' + help);
+      }, 20000);
+    })();
+  </script>
   <script type="module" src="./src/main.ts"></script>
 </body>
 </html>

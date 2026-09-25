@@ -7,14 +7,26 @@
 
 ## 실행
 
+> ⚠️ **index.html 파일을 직접 열면(더블클릭) 실행되지 않습니다.** 브라우저 보안 정책상 웹 서버가 필요합니다.
+
+**가장 쉬운 방법** — [Node.js LTS](https://nodejs.org) 설치 후:
+- **Windows**: `start.bat` 더블클릭
+- **macOS**: `start.command` 더블클릭 (처음엔 우클릭 → 열기)
+
+자동으로 설치 → 빌드 → 브라우저가 열립니다 (`http://localhost:4173`).
+
+**터미널**
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm run build      # dist/ 에 정적 빌드 (아무 웹서버로 배포 가능)
-npm test           # 헤드리스 비행 테스트 (이륙 → 상승 → ILS 자동착륙, 호버링 등)
+npm start          # 빌드 후 브라우저 자동 실행 (가장 빠름)
+npm run dev        # 개발 모드 http://localhost:5173
+npm test           # 헤드리스 비행 테스트
 ```
 
-Chrome / Edge 최신 버전 권장. `npm run dev`는 첫 실행 때만 Cesium 사전 번들링으로 몇 초 더 걸리며, 가장 빠른 실행은 `npm run build && npm run preview` 입니다. 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
+**온라인 (설치 없이)** — 저장소 Settings → Pages → Source를 **GitHub Actions**로 바꾸면
+`.github/workflows/pages.yml`이 자동 배포합니다: `https://<계정>.github.io/Flight-simulator/`
+
+Chrome / Edge 최신 버전 권장 (WebGL2, 하드웨어 가속 필요). 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
 
 ## 엔진 구성 — 왜 Unity/Unreal이 아닌가
 
