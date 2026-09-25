@@ -8,9 +8,10 @@ import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { ElevationService } from './terrain.ts';
+import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
 
-export type ImagerySource = 'esri' | 'bing-ion' | 'osm';
+export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'osm';
 export interface SceneOptions {
   imagery: ImagerySource;
   googleKey: string;
@@ -37,6 +38,7 @@ export class World {
   private cloudsAt: { lat: number; lon: number; key: string } | null = null;
   private tileset: Cesium.Cesium3DTileset | null = null;
   geoidOffset = 0;
+  runways: RunwayRenderer;
   view: ViewMode = 'cockpit';
   head = { yaw: 0, pitch: 0, zoom: 1 };
   chase = { yaw: 180, pitch: -8, dist: 1 };
@@ -92,6 +94,7 @@ export class World {
     this.rwyLights = s.primitives.add(new Cesium.PointPrimitiveCollection());
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
+    this.runways = new RunwayRenderer(s, db);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
     if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
   }
@@ -101,7 +104,13 @@ export class World {
     layers.removeAll();
     // offline base layer bundled with Cesium (always available, shows through while tiles stream)
     layers.add(Cesium.ImageryLayer.fromProviderAsync(Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')), {}));
-    if (src === 'bing-ion' && this.opts.ionToken) {
+    if (src === 'google' && this.opts.googleKey) {
+      // Official Google Maps Platform 2D satellite tiles (Map Tiles API key required)
+      const layer = Cesium.ImageryLayer.fromProviderAsync(
+        Cesium.Google2DImageryProvider.fromUrl({ key: this.opts.googleKey, mapType: 'satellite', language: 'ko', region: 'KR' }) as unknown as Promise<Cesium.ImageryProvider>, {});
+      layer.errorEvent.addEventListener(() => { this.onRenderIssue('Google 위성지도를 불러오지 못했습니다 (API 키 / Map Tiles API 활성화 확인) — Esri로 전환', false); this.setImagery('esri'); });
+      layers.add(layer);
+    } else if (src === 'bing-ion' && this.opts.ionToken) {
       layers.add(Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(2), {}));
     } else if (src === 'osm') {
       layers.add(new Cesium.ImageryLayer(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })));
@@ -235,6 +244,8 @@ export class World {
 
   // ───────────────────────── airport lighting (edge, centreline, approach, PAPI) ─────────────────────────
   updateAirportLights(ac: Aircraft, night: number, eye: { lat: number; lon: number; alt: number }) {
+    this.runways.offset = this.geoidOffset;
+    this.runways.update(ac.lat, ac.lon);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {
       this.rwyLightsAt = { lat: ac.lat, lon: ac.lon };
@@ -442,6 +453,7 @@ export class World {
 
   /** World-map style overview (menu background). */
   flyOverview(lat: number, lon: number, height = 25000) {
+    this.runways.update(lat, lon, true);
     this.scene.screenSpaceCameraController.enableInputs = true;
     (this.scene.camera.frustum as Cesium.PerspectiveFrustum).yOffset = 0;
     this.scene.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat - height / 180000, height), orientation: { heading: 0, pitch: -55 * DEG, roll: 0 }, duration: 2 });

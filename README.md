@@ -49,7 +49,8 @@ MSFS처럼 *지구 전체*를 스트리밍하려면 어차피 별도의 지구 �
 
 - **지형**: AWS Terrain Tiles (SRTM/GMTED 기반 전 세계 표고) 실시간 스트리밍
 - **활주로 평탄화**: 실제 활주로 양 끝 좌표·표고로 지형을 정지(grading) — 물리와 렌더링이 동일한 지면 함수를 사용
-- **위성영상**: Esri World Imagery (기본), 또는 **Bing Maps Aerial**(MSFS 2020과 같은 소스, Cesium ion 토큰 필요)
+- **활주로 3D 표면**: 모든 포장 활주로를 실제 좌표·폭·표고로 생성하고 ICAO 표지(시단 피아노키, 번호·L/C/R, 중심선, 접지구역, 조준점, 가장자리선) 표시
+- **위성영상**: Esri World Imagery (기본, 키 불필요), **Google 위성지도** (설정에 Google Maps API 키 입력 시), 또는 **Bing Maps Aerial**(MSFS 2020과 같은 소스, Cesium ion 토큰 필요)
 - **포토그래메트리 3D 도시**: 설정에서 **Google Photorealistic 3D Tiles** 활성화 (Google Maps Platform API 키 필요) — MSFS의 실사 도시와 가장 유사
 - **공항 DB**: OurAirports(퍼블릭 도메인) 대형·중형 공항 + 포장 활주로 소형 공항 9,560개, VOR/NDB 11,008개 (`npm run data` 로 갱신)
 - **실시간 태양 위치 · 대기 산란 · 야간 조명**, 기상 프리셋(CAVOK, 적운, 흐림, 뇌우, CAT III 안개, 강한 측풍), 바람 고도 프로파일·돌풍·난류
@@ -80,6 +81,7 @@ MSFS처럼 *지구 전체*를 스트리밍하려면 어차피 별도의 지구 �
 | H N U J V K | HDG · NAV · APP · ALT · V/S · FLC |
 | Ctrl+E | 자동 시동 |
 | 1–6 | 조종석 · HUD · 외부 · 관제탑 · 플라이바이 · 자유 시점 |
+| (터치) | iPad·태블릿: 화면 조종간·스로틀·러더·버튼 자동 표시 (상단 `터치` 버튼으로 켜기/끄기) |
 | O · C · M | 시스템 패널 · 체크리스트 · 항법 지도 |
 
 전체 목록은 게임 메뉴의 **조작법** 탭에 있습니다.

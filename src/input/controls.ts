@@ -24,6 +24,8 @@ export class Controls {
   onAction: (a: string) => void = () => {};
   private keyThrottleDirty = false;
   headDelta = { yaw: 0, pitch: 0 };
+  /** on-screen touch controls (merged like a joystick) */
+  touch = { pitch: 0, roll: 0, yaw: 0, brake: 0, trim: 0, throttleMoved: false };
 
   constructor() {
     try { const s = localStorage.getItem('sky.gamepad'); if (s) this.gp = JSON.parse(s); } catch { /* ignore */ }
@@ -104,9 +106,13 @@ export class Controls {
       const edge = (i: number, act: string) => { const was = this.btnPrev.get(pad.index * 100 + i); const now = !!btn(i); if (now && !was) this.onAction(act); this.btnPrev.set(pad.index * 100 + i, now); };
       edge(4, 'flaps-up'); edge(5, 'flaps-down'); edge(3, 'gear'); edge(9, 'pause');
     }
-    this.pitch = clamp(gpP + kp, -1, 1);
-    this.roll = clamp(gpR + kr, -1, 1);
-    this.yaw = clamp(gpY + ky, -1, 1);
+    const t = this.touch;
+    if (t.throttleMoved) { this.keyThrottleDirty = true; t.throttleMoved = false; }
+    this.brakes = Math.max(this.brakes, t.brake);
+    if (t.trim) this.trim = t.trim;
+    this.pitch = clamp(gpP + kp + t.pitch, -1, 1);
+    this.roll = clamp(gpR + kr + t.roll, -1, 1);
+    this.yaw = clamp(gpY + ky + t.yaw, -1, 1);
     // non-linear response curve for fine control
     const curve = (v: number) => Math.sign(v) * (0.35 * Math.abs(v) + 0.65 * v * v);
     this.pitch = curve(this.pitch); this.roll = curve(this.roll);

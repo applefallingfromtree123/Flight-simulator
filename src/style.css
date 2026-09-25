@@ -131,3 +131,28 @@ canvas.du.sixpack { aspect-ratio: 3 / 2; max-width: 50%; }
 .help-table td:first-child { font-family: "B612 Mono", monospace; color: var(--accent); white-space: nowrap; width: 150px; }
 .note { font-size: 11px; color: var(--dim); line-height: 1.5; }
 @media (max-width: 1100px) { #menu { grid-template-columns: 280px 1fr 340px; } }
+
+/* ───── touch controls ───── */
+#touch { position: absolute; left: 0; right: 0; top: 34px; bottom: var(--panelH); z-index: 8; pointer-events: none; touch-action: none; }
+body.nopanel #touch { bottom: 0; }
+#touch > * { pointer-events: auto; touch-action: none; -webkit-user-select: none; user-select: none; }
+.t-thr { position: absolute; left: 14px; bottom: 16px; top: 16px; width: 64px; display: flex; flex-direction: column; align-items: center; gap: 6px; max-height: 360px; margin: auto 0; }
+.t-thr-title, .t-thr-val { font: 700 12px "B612 Mono", monospace; color: #dfe6ee; text-shadow: 0 1px 2px #000; }
+.t-track { position: relative; flex: 1; width: 46px; border-radius: 10px; background: #0009; border: 1px solid #fff4; }
+.t-thumb { position: absolute; left: -6px; right: -6px; height: 26px; margin-bottom: -13px; bottom: 0; border-radius: 6px; background: linear-gradient(#e8ecf1, #9aa5b1); border: 1px solid #000; box-shadow: 0 2px 6px #000a; }
+.t-left-btns { position: absolute; left: 88px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+.t-stick { position: absolute; right: 22px; bottom: 22px; width: min(34vh, 190px); height: min(34vh, 190px); border-radius: 50%; background: radial-gradient(circle, #ffffff14 0 40%, #0007 41%); border: 2px solid #fff5; }
+.t-knob { position: absolute; left: 30%; top: 30%; width: 40%; height: 40%; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #f4f6f8, #7d8894); box-shadow: 0 3px 10px #000b; transition: transform 0.08s; }
+.t-rudder { position: absolute; left: 50%; transform: translateX(-50%); bottom: 14px; width: min(40vw, 320px); height: 34px; border-radius: 17px; background: #0009; border: 1px solid #fff4; }
+.t-rudder span { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 10px "B612 Mono", monospace; color: #fff8; pointer-events: none; }
+.t-rud-knob { position: absolute; left: 50%; top: 3px; width: 44px; height: 26px; margin-left: -22px; border-radius: 13px; background: linear-gradient(#e8ecf1, #9aa5b1); }
+.t-btns { position: absolute; right: 16px; top: 12px; display: grid; grid-template-columns: repeat(2, 76px); gap: 7px; }
+.t-btn { font: 700 12px "B612 Mono", monospace; padding: 10px 4px; background: #000a; border: 1px solid #fff4; border-radius: 8px; color: #e6ecf2; touch-action: none; }
+.t-btn.on { background: #103a22cc; border-color: var(--ok); color: var(--ok); }
+@media (max-height: 820px) { .t-btns { grid-template-columns: repeat(5, 64px); } .t-btn { padding: 8px 2px; font-size: 11px; } }
+#topbar button { white-space: nowrap; }
+#topbar .tb-right { overflow-x: auto; scrollbar-width: none; }
+#topbar .tb-left, #topbar .tb-mid { white-space: nowrap; min-width: 0; }
+#tbAircraft { overflow: hidden; text-overflow: ellipsis; max-width: 22vw; }
+@media (max-width: 1400px) { #tbPos { display: none; } #topbar button { padding: 3px 6px; font-size: 11px; } #topbar { gap: 4px; } }
+@media (max-width: 1100px) { #tbAircraft { display: none; } }

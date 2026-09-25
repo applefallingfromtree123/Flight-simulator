@@ -15,6 +15,7 @@ import { Sound } from './audio/sound.ts';
 import { Menu, type FlightConfig } from './ui/menu.ts';
 import { Cockpit } from './ui/cockpit.ts';
 import { HUD } from './avionics/hud.ts';
+import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
 
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = CESIUM_BASE_URL;
@@ -41,6 +42,7 @@ class App {
   controls = new Controls();
   sound = new Sound();
   menu!: Menu;
+  touch!: TouchControls;
   hud!: HUD;
   // flight
   ac: Aircraft | null = null;
@@ -83,6 +85,8 @@ class App {
       toast('설정 저장됨');
     };
     this.controls.onAction = a => this.action(a);
+    this.touch = new TouchControls(this.controls, a => this.action(a));
+    $('btnTouch').classList.toggle('on', this.touch.enabled);
     this.bindUi();
     loading(null);
     (window as unknown as { __booted: boolean }).__booted = true;
@@ -332,6 +336,8 @@ class App {
       case 'view-tower': this.setView('tower'); break;
       case 'view-flyby': this.setView('flyby'); break;
       case 'view-free': this.setView('free'); break;
+      case 'view-next': { const vs: ViewMode[] = ['cockpit', 'cockpit-hud', 'chase', 'tower', 'flyby']; this.setView(vs[(vs.indexOf(this.world.view) + 1) % vs.length]); break; }
+      case 'athr-off': if (f.athr !== 'OFF') { f.athr = 'OFF'; toast('A/THR DISCONNECT'); } break;
       case 'lights': { const on = !(s.sw.nav && s.sw.beacon && s.sw.strobe && s.sw.landing); s.sw.nav = s.sw.beacon = s.sw.strobe = s.sw.landing = s.sw.taxi = on; this.cockpit.refreshOverhead(); toast(`EXT LIGHTS ${on ? 'ON' : 'OFF'}`); break; }
       case 'autostart': s.setReady(true); s.sw.beacon = true; if (ac.isRotor) { for (const c of ac.engineCmd) c.throttle = 1; ac.rotorRpm = 1; } this.cockpit.refreshOverhead(); toast('AUTO START 완료'); break;
       case 'shutdown': s.setReady(false); this.cockpit.refreshOverhead(); toast('SHUTDOWN'); break;
@@ -370,6 +376,7 @@ class App {
 
   openMenu() {
     this.paused = true;
+    this.touch.show(false, false);
     this.menu.show(this.flying);
   }
   resume() {
@@ -385,8 +392,9 @@ class App {
     $('btnMap').onclick = () => this.action('map');
     $('btnFms').onclick = () => this.action('fms');
     $('btnMenu').onclick = () => this.openMenu();
+    $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
     $('crashRetry').onclick = () => { if (this.cfg) void this.startFlight(this.cfg); };
-    $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.flying = false; document.body.classList.remove('flying'); $('topbar').classList.add('hidden'); this.layout(); this.menu.show(false); };
+    $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.flying = false; this.touch.show(false, false); document.body.classList.remove('flying'); $('topbar').classList.add('hidden'); this.layout(); this.menu.show(false); };
     document.querySelectorAll<HTMLElement>('.window').forEach(w => {
       w.querySelector<HTMLButtonElement>('.close')!.onclick = () => w.classList.add('hidden');
       const head = w.querySelector<HTMLElement>('.win-head')!;
@@ -400,9 +408,10 @@ class App {
     // mouse look / orbit
     const el = $('world');
     el.addEventListener('contextmenu', e => e.preventDefault());
-    el.addEventListener('mousedown', e => { if (this.world.view !== 'free') this.dragging = { x: e.clientX, y: e.clientY, btn: e.button }; });
-    window.addEventListener('mouseup', () => { this.dragging = null; });
-    window.addEventListener('mousemove', e => {
+    el.addEventListener('pointerdown', e => { if (this.world.view !== 'free') this.dragging = { x: e.clientX, y: e.clientY, btn: e.button }; });
+    window.addEventListener('pointerup', () => { this.dragging = null; });
+    window.addEventListener('pointercancel', () => { this.dragging = null; });
+    window.addEventListener('pointermove', e => {
       if (!this.dragging || this.world.view === 'free') return;
       const dx = e.clientX - this.dragging.x, dy = e.clientY - this.dragging.y;
       this.dragging.x = e.clientX; this.dragging.y = e.clientY;
@@ -431,6 +440,7 @@ class App {
     const ac = this.ac, f = this.fcs, s = this.sys, c = this.controls;
     const rate = RATES[this.rateIdx];
     const running = !this.paused && !ac.crash && !this.menu.visible;
+    this.touch.show(!this.menu.visible && !ac.crash, ac.isRotor);
     this.world.viewer.clock.shouldAnimate = running;
     this.world.viewer.clock.multiplier = rate;
 
@@ -508,6 +518,7 @@ class App {
       else if (!$('mapwin').classList.contains('hidden')) this.cockpit.draw(1 / 30);
       this.cockpit.refreshMcp();
       this.cockpit.updatePedestal(1 / 30, c.throttle);
+      this.touch.sync(ac.isRotor ? ac.collective : (ac.engineCmd[0]?.throttle ?? c.throttle));
       const fr = w.scene.camera.frustum as Cesium.PerspectiveFrustum & { fovy: number };
       const hudOn = (w.view === 'cockpit-hud' || (w.view === 'cockpit' && ac.def.cockpit === 'fighter')) && s.avionicsPowered;
       this.hud.draw(this.av, hudOn, fr.fovy * RAD, w.head.yaw, w.head.pitch);
