@@ -12,6 +12,7 @@ import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
 
 export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'sentinel2' | 'osm';
+const IMAGERY_LABEL: Record<ImagerySource, string> = { google: 'Google', esri: 'Esri', 'bing-ion': 'Bing', sentinel2: 'Sentinel-2', osm: 'OSM' };
 export interface SceneOptions {
   imagery: ImagerySource;
   googleKey: string;
@@ -73,6 +74,7 @@ export class World {
     this.setImagery(opts.imagery);
     const s = this.scene;
     s.globe.enableLighting = true;
+    s.globe.baseColor = Cesium.Color.fromCssColorString('#1b2430'); // dark slate while imagery streams in or if it fails — never literal black
     s.globe.depthTestAgainstTerrain = true;
     s.globe.maximumScreenSpaceError = opts.quality === 'high' ? 1.5 : opts.quality === 'medium' ? 2 : 3;
     s.globe.tileCacheSize = 400;
@@ -100,16 +102,36 @@ export class World {
   }
 
   private imageryGen = 0;
-  setImagery(src: ImagerySource) {
+  /**
+   * @param chain sources already tried in this fallback cascade (prevents looping back to a source
+   * that just failed, and lets us give up with a clear message instead of going silently blank).
+   */
+  setImagery(src: ImagerySource, chain: ImagerySource[] = []) {
     const gen = ++this.imageryGen;
-    // Guards a fallback callback against firing after this layer has been superseded (and destroyed)
-    // by a later setImagery call — without this, Cesium throws "This object was destroyed" instead.
-    const fallback = (layer: Cesium.ImageryLayer, msg: string) => {
-      layer.errorEvent.addEventListener(() => {
-        if (gen !== this.imageryGen) return;
-        this.onRenderIssue(msg, false);
-        this.setImagery('esri');
-      });
+    const tried = [...chain, src];
+    const next = (): ImagerySource | null => (['esri', 'sentinel2', 'osm'] as ImagerySource[]).find(s => !tried.includes(s)) ?? null;
+    // Per-tile fetch failures surface on the *imagery provider's* errorEvent, not the ImageryLayer's
+    // (the layer's own errorEvent only fires if the provider itself never got constructed at all —
+    // a blocked host or bad API key still "constructs" fine and then fails every tile request).
+    // A handful of failures within a short window (not just one — a single dropped tile over open
+    // ocean is normal) means the source is actually unreachable, not just having a bad moment.
+    let fails = 0, firstFailAt = 0;
+    const onTileError = (label: string) => {
+      if (gen !== this.imageryGen) return;
+      const now = performance.now();
+      if (now - firstFailAt > 6000) { fails = 0; firstFailAt = now; }
+      if (++fails < 3) return;
+      const n = next();
+      if (n) { this.onRenderIssue(`${label}를 불러오지 못했습니다 — ${IMAGERY_LABEL[n]}(으)로 전환`, false); this.setImagery(n, tried); }
+      else this.onRenderIssue(`위성지도를 하나도 불러오지 못했습니다 (${tried.map(s => IMAGERY_LABEL[s]).join(', ')}) — 네트워크 연결을 확인하세요. 지형과 활주로, 비행은 계속 정상 동작합니다.`, false);
+    };
+    /** Attach onTileError to a provider we already have in hand (sync-constructed providers). */
+    const watch = (provider: Cesium.ImageryProvider, label: string) => provider.errorEvent.addEventListener(() => onTileError(label));
+    /** Same, but for fromProviderAsync layers whose provider only exists once the layer is ready
+     *  (and cover the rarer case where the provider promise itself rejects before ever existing). */
+    const watchAsync = (layer: Cesium.ImageryLayer, label: string) => {
+      layer.readyEvent.addEventListener(provider => watch(provider, label));
+      layer.errorEvent.addEventListener(() => onTileError(label));
     };
     const layers = this.viewer.imageryLayers;
     layers.removeAll();
@@ -119,45 +141,82 @@ export class World {
       // Official Google Maps Platform 2D satellite tiles (Map Tiles API key required)
       const layer = Cesium.ImageryLayer.fromProviderAsync(
         Cesium.Google2DImageryProvider.fromUrl({ key: this.opts.googleKey, mapType: 'satellite', language: 'ko', region: 'KR' }) as unknown as Promise<Cesium.ImageryProvider>, {});
-      fallback(layer, 'Google 위성지도를 불러오지 못했습니다 (API 키 / Map Tiles API 활성화 확인) — Esri로 전환');
+      watchAsync(layer, 'Google 위성지도 (API 키 / Map Tiles API 활성화 확인)');
       layers.add(layer);
     } else if (src === 'bing-ion' && this.opts.ionToken) {
       const layer = Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(2), {});
-      fallback(layer, 'Bing 위성지도를 불러오지 못했습니다 (ion 토큰 확인) — Esri로 전환');
+      watchAsync(layer, 'Bing 위성지도 (ion 토큰 확인)');
       layers.add(layer);
     } else if (src === 'bing-ion' && !this.opts.ionToken) {
-      this.onRenderIssue('Bing 위성지도를 쓰려면 설정에 Cesium ion 토큰을 입력하세요 — Esri로 전환', false);
-      this.setImagery('esri');
+      const n = next() ?? 'esri';
+      this.onRenderIssue(`Bing 위성지도를 쓰려면 설정에 Cesium ion 토큰을 입력하세요 — ${IMAGERY_LABEL[n]}(으)로 전환`, false);
+      this.setImagery(n, tried);
       return;
     } else if (src === 'sentinel2') {
       // Sentinel-2 cloudless (EOX IT Services) — free, no key, ~10 m/px global mosaic, genuinely
       // independent satellite source from Esri/Google. Coarser up close (good to ~FL100 and above).
-      const layer = new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+      const provider = new Cesium.UrlTemplateImageryProvider({
         url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/{z}/{y}/{x}.jpg',
         maximumLevel: 14,
         credit: new Cesium.Credit('Sentinel-2 cloudless by EOX IT Services GmbH (Contains modified Copernicus Sentinel data)'),
-      }));
-      fallback(layer, 'Sentinel-2 위성지도를 불러오지 못했습니다 — Esri로 전환');
-      layers.add(layer);
+      });
+      watch(provider, 'Sentinel-2 위성지도');
+      layers.add(new Cesium.ImageryLayer(provider));
     } else if (src === 'osm') {
-      layers.add(new Cesium.ImageryLayer(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })));
+      const provider = new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' });
+      watch(provider, 'OpenStreetMap');
+      layers.add(new Cesium.ImageryLayer(provider));
     } else {
-      layers.add(new Cesium.ImageryLayer(new Cesium.UrlTemplateImageryProvider({
+      const provider = new Cesium.UrlTemplateImageryProvider({
         url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
         maximumLevel: 19,
         credit: new Cesium.Credit('Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community'),
-      })));
+      });
+      watch(provider, 'Esri 위성지도');
+      layers.add(new Cesium.ImageryLayer(provider));
     }
   }
 
+  private photorealGen = 0;
   async enablePhotoreal(key: string) {
+    const gen = ++this.photorealGen;
+    // never leave the ground blank: keep the globe visible until the tileset has proven it can
+    // actually render content (a valid-looking tileset.json can still fail every tile request —
+    // wrong API restriction, billing not enabled, quota — which used to hide the globe over nothing)
     try {
-      this.tileset = await Cesium.createGooglePhotorealistic3DTileset({ key }, { maximumScreenSpaceError: 12, cacheBytes: 1024 * 1024 * 1024 });
-      this.scene.primitives.add(this.tileset);
-      this.scene.globe.show = false;
+      const tileset = await Cesium.createGooglePhotorealistic3DTileset({ key }, { maximumScreenSpaceError: 12, cacheBytes: 1024 * 1024 * 1024 });
+      if (gen !== this.photorealGen) { tileset.destroy(); return; } // superseded while awaiting
+      this.scene.primitives.add(tileset);
+      this.tileset = tileset;
+      let loaded = false, failed = 0;
+      const onLoad = () => {
+        if (loaded || gen !== this.photorealGen) return;
+        loaded = true;
+        this.scene.globe.show = false;
+      };
+      const onFail = () => { failed++; };
+      tileset.tileLoad.addEventListener(onLoad);
+      tileset.tileFailed.addEventListener(onFail);
+      setTimeout(() => {
+        tileset.tileLoad.removeEventListener(onLoad);
+        tileset.tileFailed.removeEventListener(onFail);
+        if (loaded || gen !== this.photorealGen || tileset.isDestroyed()) return;
+        // 12 s and not a single tile rendered: treat it as a dead key/quota, not slow network
+        this.scene.primitives.remove(tileset);
+        if (this.tileset === tileset) this.tileset = null;
+        this.scene.globe.show = true;
+        this.onRenderIssue(`Google 3D Tiles를 불러오지 못했습니다${failed > 0 ? ' (API 키의 결제·권한 확인)' : ' (응답 없음 — 네트워크 확인)'} — 일반 지형으로 전환`, false);
+      }, 12000);
     } catch (e) {
       console.warn('Photorealistic 3D Tiles failed', e);
+      if (gen === this.photorealGen) this.onRenderIssue('Google 3D Tiles 초기화 실패 — 일반 지형으로 전환', false);
     }
+  }
+  /** Turn photorealistic 3D tiles back off and restore the normal globe. */
+  disablePhotoreal() {
+    this.photorealGen++;
+    if (this.tileset) { this.scene.primitives.remove(this.tileset); this.tileset = null; }
+    this.scene.globe.show = true;
   }
 
   /** With photorealistic tiles (ellipsoidal heights), measure the MSL→ellipsoid offset at a runway. */

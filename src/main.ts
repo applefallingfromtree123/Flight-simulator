@@ -65,7 +65,7 @@ class App {
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });
-    let lastIssue = 0;
+    let lastIssue = -Infinity; // never suppress the very first render-issue toast (e.g. right at boot)
     this.world.onRenderIssue = (msg, fatal) => {
       if (fatal) { loading(`그래픽 오류로 렌더링을 계속할 수 없습니다: ${msg}`); document.querySelector<HTMLElement>('#loading .spinner')?.style.setProperty('display', 'none'); return; }
       if (performance.now() - lastIssue > 15000) { lastIssue = performance.now(); toast(`렌더링 오류 자동 복구: ${msg.slice(0, 120)}`); }
@@ -82,6 +82,7 @@ class App {
       this.world.setImagery(st.imagery);
       this.world.viewer.shadows = st.shadows;
       if (st.photoreal && st.googleKey) void this.world.enablePhotoreal(st.googleKey);
+      else this.world.disablePhotoreal();
       toast('설정 저장됨');
     };
     this.controls.onAction = a => this.action(a);
