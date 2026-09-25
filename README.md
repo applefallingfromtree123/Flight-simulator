@@ -23,8 +23,9 @@ npm run dev        # 개발 모드 http://localhost:5173
 npm test           # 헤드리스 비행 테스트
 ```
 
-**온라인 (설치 없이)** — 저장소 Settings → Pages → Source를 **GitHub Actions**로 바꾸면
-`.github/workflows/pages.yml`이 자동 배포합니다: `https://<계정>.github.io/Flight-simulator/`
+**온라인 (설치 없이)** — `https://applefallingfromtree123.github.io/Flight-simulator/`
+`.github/workflows/pages.yml`이 push마다 빌드·배포합니다. 저장소 Settings → Pages → Source는 **GitHub Actions** 로 두세요
+("Deploy from a branch"로 두면 빌드되지 않은 소스가 올라가 로딩 화면에서 멈춥니다).
 
 Chrome / Edge 최신 버전 권장 (WebGL2, 하드웨어 가속 필요). 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
 

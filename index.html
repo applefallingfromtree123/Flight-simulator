@@ -72,6 +72,12 @@
         });
         return;
       }
+      if (/github\.io$/.test(location.hostname)) {
+        // GitHub Pages serving the raw branch (unbuilt TypeScript) instead of the Actions build
+        help = '<div style="text-align:left;line-height:1.7;font-size:13px;margin-top:10px">' +
+          'GitHub Pages가 <b>빌드되지 않은 소스</b>를 서비스하고 있습니다.<br>' +
+          '저장소 <b>Settings → Pages → Build and deployment → Source</b> 를<br><b>“GitHub Actions”</b> 로 바꾸면 자동으로 빌드·배포됩니다 (1~2분).</div>';
+      }
       window.addEventListener('error', function (e) {
         if (window.__booted) return;
         var src = e.target && (e.target.src || e.target.href);

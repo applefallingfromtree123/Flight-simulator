@@ -32,5 +32,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # If the repository's Pages source is still "Deploy from a branch", GitHub also publishes the raw
+      # (unbuilt) branch on every push. Wait for that to finish so this built version is published last.
+      # Once Settings -> Pages -> Source is "GitHub Actions" this wait is harmless and can be removed.
+      - name: Let the branch-based Pages build finish first
+        run: sleep 90
       - id: deployment
         uses: actions/deploy-pages@v4
