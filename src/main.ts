@@ -63,6 +63,11 @@ class App {
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });
+    let lastIssue = 0;
+    this.world.onRenderIssue = (msg, fatal) => {
+      if (fatal) { loading(`그래픽 오류로 렌더링을 계속할 수 없습니다: ${msg}`); document.querySelector<HTMLElement>('#loading .spinner')?.style.setProperty('display', 'none'); return; }
+      if (performance.now() - lastIssue > 15000) { lastIssue = performance.now(); toast(`렌더링 오류 자동 복구: ${msg.slice(0, 120)}`); }
+    };
     this.hud = new HUD($('hudLayer'));
     this.sound.volume = s.volume;
     this.menu.onFly = c => { this.sound.init(); void this.startFlight(c); };

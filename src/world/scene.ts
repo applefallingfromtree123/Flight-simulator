@@ -61,6 +61,7 @@ export class World {
       animation: false, timeline: false, baseLayerPicker: false, geocoder: false, homeButton: false,
       sceneModePicker: false, navigationHelpButton: false, fullscreenButton: false, infoBox: false,
       selectionIndicator: false, shouldAnimate: true, requestRenderMode: false,
+      showRenderLoopErrors: false, // handled below: recover instead of freezing the screen
       msaaSamples: opts.quality === 'high' ? 4 : 1,
       contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
@@ -90,6 +91,8 @@ export class World {
     this.lights = s.primitives.add(new Cesium.PointPrimitiveCollection());
     this.rwyLights = s.primitives.add(new Cesium.PointPrimitiveCollection());
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
+    this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
+    s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
     if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
   }
 
@@ -444,19 +447,72 @@ export class World {
     this.scene.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(lon, lat - height / 180000, height), orientation: { heading: 0, pitch: -55 * DEG, roll: 0 }, duration: 2 });
   }
 
-  private routeEntity: Cesium.Entity | null = null;
+  private routeLines: Cesium.PolylineCollection;
+  /** Route line drawn synchronously (no geometry web worker), densified along great circles. */
   showRoute(pts: { lat: number; lon: number }[]) {
-    if (this.routeEntity) this.viewer.entities.remove(this.routeEntity);
-    this.routeEntity = null;
+    this.routeLines.removeAll();
     if (pts.length < 2) return;
-    this.routeEntity = this.viewer.entities.add({
-      polyline: {
-        positions: pts.map(p => Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 0)),
-        width: 3, arcType: Cesium.ArcType.GEODESIC, clampToGround: false,
-        material: new Cesium.PolylineDashMaterialProperty({ color: Cesium.Color.fromCssColorString('#d946ef') }),
-      },
-    });
+    const positions: Cesium.Cartesian3[] = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const d = distance(a, b);
+      const n = Math.max(1, Math.ceil(d / 40000));
+      const va = Cesium.Cartesian3.fromDegrees(a.lon, a.lat, 0), vb = Cesium.Cartesian3.fromDegrees(b.lon, b.lat, 0);
+      const ua = Cesium.Cartesian3.normalize(va, new Cesium.Cartesian3()), ub = Cesium.Cartesian3.normalize(vb, new Cesium.Cartesian3());
+      const om = Math.acos(clamp(Cesium.Cartesian3.dot(ua, ub), -1, 1));
+      for (let k = 0; k < n; k++) {
+        const t = k / n;
+        const w1 = om < 1e-9 ? 1 - t : Math.sin((1 - t) * om) / Math.sin(om), w2 = om < 1e-9 ? t : Math.sin(t * om) / Math.sin(om);
+        const u = new Cesium.Cartesian3(ua.x * w1 + ub.x * w2, ua.y * w1 + ub.y * w2, ua.z * w1 + ub.z * w2);
+        const c = Cesium.Cartographic.fromCartesian(u);
+        if (c) positions.push(Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, 200));
+      }
+    }
+    positions.push(Cesium.Cartesian3.fromDegrees(pts[pts.length - 1].lon, pts[pts.length - 1].lat, 200));
+    this.routeLines.add({ positions, width: 3, material: Cesium.Material.fromType('PolylineDash', { color: Cesium.Color.fromCssColorString('#d946ef'), dashLength: 16 }) });
   }
+
+  // ───────────────────────── render-error recovery ─────────────────────────
+  onRenderIssue: (msg: string, fatal: boolean) => void = () => {};
+  private errTimes: number[] = [];
+  private degraded = 0;
+  static describeError(e: unknown): string {
+    if (e === null || e === undefined) return String(e);
+    if (typeof e === 'string') return e;
+    const o = e as Record<string, unknown>;
+    if (typeof o.name === 'string' && typeof o.message === 'string') return `${o.name}: ${o.message}`;
+    if (typeof o.message === 'string') return o.message;
+    const parts: string[] = [];
+    if (typeof Event !== 'undefined' && e instanceof Event) parts.push(`Event(${e.type})`);
+    for (const k of ['statusCode', 'status', 'type', 'filename', 'url', 'response', 'error']) if (o[k] !== undefined) parts.push(`${k}=${String(o[k]).slice(0, 120)}`);
+    try { const t = String(e); if (t !== '[object Object]') parts.push(t); } catch { /* ignore */ }
+    if (!parts.length) { try { parts.push(JSON.stringify(e).slice(0, 200)); } catch { parts.push(Object.prototype.toString.call(e)); } }
+    return parts.join(' ');
+  }
+  private handleRenderError(err: unknown) {
+    const msg = World.describeError(err);
+    console.error('Render error:', msg, err);
+    const now = performance.now();
+    this.errTimes = this.errTimes.filter(t => now - t < 10000);
+    this.errTimes.push(now);
+    // progressively disable optional features if the error keeps coming back
+    if (this.errTimes.length >= 3 && this.degraded < 3) {
+      this.degraded++;
+      this.errTimes = [];
+      if (this.degraded === 1) { this.routeLines.show = false; this.clouds.show = false; }
+      if (this.degraded === 2) { this.scene.postProcessStages.fxaa.enabled = false; this.lights.show = false; this.rwyLights.show = false; if (this.tileset) this.tileset.show = false; this.scene.globe.show = true; }
+      if (this.degraded === 3) { this.setImageryFallback(); }
+    }
+    const fatal = this.degraded >= 3 && this.errTimes.length >= 3;
+    this.onRenderIssue(msg, fatal);
+    if (!fatal) setTimeout(() => { this.viewer.useDefaultRenderLoop = true; }, 50); // resume rendering
+  }
+  private setImageryFallback() {
+    const layers = this.viewer.imageryLayers;
+    layers.removeAll();
+    layers.add(Cesium.ImageryLayer.fromProviderAsync(Cesium.TileMapServiceImageryProvider.fromUrl(Cesium.buildModuleUrl('Assets/Textures/NaturalEarthII')), {}));
+  }
+
   hideRoute() { this.showRoute([]); }
 }
 
