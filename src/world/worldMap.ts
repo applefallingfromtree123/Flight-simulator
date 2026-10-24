@@ -35,7 +35,7 @@ export class AirportMap {
 
   /** Nearest marker within a finger-sized radius of the click/tap. */
   private pickAt(pos: Cesium.Cartesian2): Airport | null {
-    const hits = this.scene.drillPick(pos, 8, 12, 12) as { id?: unknown }[];
+    const hits = this.scene.drillPick(pos, 8, 22, 22) as { id?: unknown }[];
     for (const h of hits) if (typeof h.id === 'string' && this.db.get(h.id)) return this.db.get(h.id)!;
     return null;
   }

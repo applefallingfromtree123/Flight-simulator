@@ -24,7 +24,9 @@ const tiltUp = (deg: number): P3 => [Math.sin(deg * Math.PI / 180), 0, -Math.cos
 
 export class Cockpit3D {
   model: Cesium.Model | null = null;
-  private screens: { def: ScreenDef; prim: Cesium.Primitive; tex: unknown; cv: HTMLCanvasElement }[] = [];
+  private screens: { def: ScreenDef; prim: Cesium.Primitive }[] = [];
+  /** One GPU texture per avionics source, shared by every screen showing it (e.g. both PFDs). */
+  private textures = new Map<Src, { tex: unknown; cv: HTMLCanvasElement }>();
   private levers: Lever[] = [];
   private pivots = new Map<string, P3>();
   private holder = document.createElement('div');
@@ -38,8 +40,15 @@ export class Cockpit3D {
 
   destroy() {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
-    for (const s of this.screens) { this.scene.primitives.remove(s.prim); (s.tex as { destroy?: () => void }).destroy?.(); }
+    for (const s of this.screens) {
+      // the textures are shared and owned here: detach them so the material doesn't destroy them too
+      const m = (s.prim.appearance as unknown as { material?: { _textures?: Record<string, unknown>; _defaultTexture?: unknown } }).material;
+      if (m?._textures) for (const k of Object.keys(m._textures)) m._textures[k] = m._defaultTexture;
+      this.scene.primitives.remove(s.prim);
+    }
+    for (const t of this.textures.values()) (t.tex as { destroy?: () => void }).destroy?.();
     this.screens = [];
+    this.textures.clear();
   }
 
   async build(ac: Aircraft, eye: P3) {
@@ -74,9 +83,14 @@ export class Cockpit3D {
     const TextureCtor = (Cesium as unknown as { Texture: new (o: object) => { copyFrom(o: object): void; destroy(): void } }).Texture;
     for (const def of screens) {
       const cv = def.src === 'pfd' ? this.pfd!.cv : def.src === 'nd' ? this.nd!.cv : def.src === 'eicas' ? this.eicas!.cv : def.src === 'six' ? this.six!.cv : def.src === 'fcu' ? this.fcu : this.ovh;
-      const g = cv.getContext('2d')!; g.fillStyle = '#05070a'; g.fillRect(0, 0, cv.width, cv.height);
-      if (def.src === 'ovh') drawOverhead(cv, kind);
-      const tex = new TextureCtor({ context: ctx, source: cv, sampler: new (Cesium as unknown as { Sampler: new (o: object) => unknown }).Sampler({ minificationFilter: Cesium.TextureMinificationFilter.LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR }) });
+      let entry = this.textures.get(def.src);
+      if (!entry) {
+        const g = cv.getContext('2d')!; g.fillStyle = '#05070a'; g.fillRect(0, 0, cv.width, cv.height);
+        if (def.src === 'ovh') drawOverhead(cv, kind);
+        entry = { cv, tex: new TextureCtor({ context: ctx, source: cv, sampler: new (Cesium as unknown as { Sampler: new (o: object) => unknown }).Sampler({ minificationFilter: Cesium.TextureMinificationFilter.LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR }) }) };
+        this.textures.set(def.src, entry);
+      }
+      const tex = entry.tex;
       const material = new Cesium.Material({ fabric: { type: 'Image', uniforms: { image: Cesium.Material.DefaultImageId } } });
       (material.uniforms as Record<string, unknown>).image = tex;
       const prim = this.scene.primitives.add(new Cesium.Primitive({
@@ -85,7 +99,7 @@ export class Cockpit3D {
           renderState: { cull: { enabled: false }, depthTest: { enabled: true } } }),
         asynchronous: false, compressVertices: false, show: false,
       })) as Cesium.Primitive;
-      this.screens.push({ def, prim, tex, cv });
+      this.screens.push({ def, prim });
     }
   }
 
@@ -119,10 +133,10 @@ export class Cockpit3D {
     this.eicas?.draw(av);
     this.six?.draw(av, 1 / 20);
     drawFcu(this.fcu, av, ac);
-    for (const s of this.screens) {
-      if (s.def.src === 'ovh') continue;
-      if (!sys.avionicsPowered && s.def.src !== 'six') { const g = s.cv.getContext('2d')!; g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#05070a'; g.fillRect(0, 0, s.cv.width, s.cv.height); }
-      try { (s.tex as { copyFrom(o: object): void }).copyFrom({ source: s.cv }); } catch { /* size changed mid-flight: ignore this frame */ }
+    for (const [src, t] of this.textures) {
+      if (src === 'ovh') continue;
+      if (!sys.avionicsPowered && src !== 'six') { const g = t.cv.getContext('2d')!; g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#05070a'; g.fillRect(0, 0, t.cv.width, t.cv.height); }
+      try { (t.tex as { copyFrom(o: object): void }).copyFrom({ source: t.cv }); } catch { /* size changed mid-flight: ignore this frame */ }
     }
   }
 }
