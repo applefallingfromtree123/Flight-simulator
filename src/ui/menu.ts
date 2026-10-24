@@ -9,6 +9,8 @@ import { KEY_HELP } from './help.ts';
 
 export interface FlightConfig {
   aircraftId: string;
+  /** livery id per aircraft type */
+  livery: Record<string, string>;
   dep: string; depRwy: string; start: 'runway' | 'cold' | 'final' | 'cruise' | 'air';
   arr: string; arrRwy: string; route: string; cruiseFt: number;
   fuelPct: number; payloadPct: number;
@@ -21,7 +23,7 @@ export interface Settings {
 }
 
 const DEF_CFG: FlightConfig = {
-  aircraftId: 'a320neo', dep: 'RKSI', depRwy: '', start: 'runway', arr: 'RJTT', arrRwy: '', route: '',
+  aircraftId: 'a320neo', livery: {}, dep: 'RKSI', depRwy: '', start: 'runway', arr: 'RJTT', arrRwy: '', route: '',
   cruiseFt: 35000, fuelPct: 60, payloadPct: 70, time: 'now', weather: 'clear', windDir: null, windSpd: null, visibility: null,
 };
 const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'medium', shadows: false, volume: 0.7, autoMixture: true };

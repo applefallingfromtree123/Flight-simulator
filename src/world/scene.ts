@@ -7,6 +7,7 @@ import { destination, distance } from '../core/geo.ts';
 import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
+import { getLivery } from './liveries.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
@@ -237,9 +238,9 @@ export class World {
   }
 
   // ───────────────────────── aircraft model ─────────────────────────
-  async loadAircraft(ac: Aircraft) {
+  async loadAircraft(ac: Aircraft, liveryId?: string) {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
-    const { glb, nodes } = buildAircraftGlb(ac.def, ac.aero);
+    const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId));
     const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
     this.model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, color: Cesium.Color.WHITE });
     this.scene.primitives.add(this.model);

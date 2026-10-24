@@ -143,7 +143,7 @@ class App {
     // scene
     this.world.hideRoute();
     this.world.geoidOffset = 0;
-    await this.world.loadAircraft(ac);
+    await this.world.loadAircraft(ac, cfg.livery?.[def.id]);
     if (this.world.opts.photoreal) await this.world.calibrateGeoid(ac.lat, ac.lon, ac.groundH);
     this.world.updateWeather(w, ac, true);
     this.world.view = def.cockpit === 'fighter' ? 'cockpit' : 'cockpit';
