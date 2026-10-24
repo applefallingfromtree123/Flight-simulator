@@ -9,10 +9,12 @@ import { PFD } from '../avionics/pfd.ts';
 import { ND } from '../avionics/nd.ts';
 import { EICAS } from '../avionics/eicas.ts';
 import { SixPack } from '../avionics/steam.ts';
+import { airlinerPanel, efisPanel, fighterPanel, gaPanel, heliPanel, overheadArt, pedestalArt, surface, type Art, type Rect } from './cockpitArt.ts';
 
-type Src = 'pfd' | 'nd' | 'eicas' | 'six' | 'fcu' | 'ovh';
-/** A flat screen: centre, right and up unit vectors (body FRD), size in metres. */
-interface ScreenDef { src: Src; c: P3; r: P3; u: P3; w: number; h: number }
+type Src = 'pfd' | 'nd' | 'eicas' | 'six' | 'fcu' | 'art';
+/** A flat screen: centre, right and up unit vectors (body FRD), size in metres. `art` = static painted surface. */
+interface ScreenDef { src: Src; c: P3; r: P3; u: P3; w: number; h: number; art?: Art }
+const SCREEN_INSET = -0.01, ART_INSET = -0.004;
 interface Lever { node: string; kind: 'stick' | 'yoke' | 'thr' | 'coll'; idx?: number }
 
 const add = (a: P3, b: P3): P3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -24,15 +26,15 @@ const tiltUp = (deg: number): P3 => [Math.sin(deg * Math.PI / 180), 0, -Math.cos
 
 export class Cockpit3D {
   model: Cesium.Model | null = null;
-  private screens: { def: ScreenDef; prim: Cesium.Primitive }[] = [];
-  /** One GPU texture per avionics source, shared by every screen showing it (e.g. both PFDs). */
-  private textures = new Map<Src, { tex: unknown; cv: HTMLCanvasElement }>();
+  private screens: { def: ScreenDef; prim: Cesium.Primitive; material: Cesium.Material }[] = [];
+  /** One GPU texture per source, shared by every screen showing it (e.g. both PFDs). */
+  private textures = new Map<string, { tex: unknown; cv: HTMLCanvasElement; live: boolean }>();
+  private light = -1;
   private levers: Lever[] = [];
   private pivots = new Map<string, P3>();
   private holder = document.createElement('div');
   private pfd: PFD | null = null; private nd: ND | null = null; private eicas: EICAS | null = null; private six: SixPack | null = null;
   private fcu = document.createElement('canvas');
-  private ovh = document.createElement('canvas');
   private drawT = 0;
   visible = false;
 
@@ -77,40 +79,58 @@ export class Cockpit3D {
       disp.cv.width = disp.fixed[0]; disp.cv.height = disp.fixed[1];
     }
     this.fcu.width = 1024; this.fcu.height = 128;
-    this.ovh.width = 1024; this.ovh.height = 512;
-    drawOverhead(this.ovh, kind);
     const ctx = (this.scene as unknown as { context: unknown }).context;
-    const TextureCtor = (Cesium as unknown as { Texture: new (o: object) => { copyFrom(o: object): void; destroy(): void } }).Texture;
+    const TextureCtor = (Cesium as unknown as { Texture: new (o: object) => { copyFrom(o: object): void; destroy(): void; generateMipmap(): void } }).Texture;
+    const SamplerCtor = (Cesium as unknown as { Sampler: new (o: object) => unknown }).Sampler;
     for (const def of screens) {
-      const cv = def.src === 'pfd' ? this.pfd!.cv : def.src === 'nd' ? this.nd!.cv : def.src === 'eicas' ? this.eicas!.cv : def.src === 'six' ? this.six!.cv : def.src === 'fcu' ? this.fcu : this.ovh;
-      let entry = this.textures.get(def.src);
+      const key = def.art ? def.art.key : def.src;
+      let entry = this.textures.get(key);
       if (!entry) {
-        const g = cv.getContext('2d')!; g.fillStyle = '#05070a'; g.fillRect(0, 0, cv.width, cv.height);
-        if (def.src === 'ovh') drawOverhead(cv, kind);
-        entry = { cv, tex: new TextureCtor({ context: ctx, source: cv, sampler: new (Cesium as unknown as { Sampler: new (o: object) => unknown }).Sampler({ minificationFilter: Cesium.TextureMinificationFilter.LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR }) }) };
-        this.textures.set(def.src, entry);
+        let cv: HTMLCanvasElement;
+        if (def.art) {
+          cv = document.createElement('canvas'); cv.width = def.art.W; cv.height = def.art.H;
+          def.art.draw(cv.getContext('2d')!);
+        } else {
+          cv = def.src === 'pfd' ? this.pfd!.cv : def.src === 'nd' ? this.nd!.cv : def.src === 'eicas' ? this.eicas!.cv : def.src === 'six' ? this.six!.cv : this.fcu;
+          const g = cv.getContext('2d')!; g.fillStyle = '#05070a'; g.fillRect(0, 0, cv.width, cv.height);
+        }
+        // painted surfaces are static: mipmapped + anisotropic so small legends stay crisp at grazing angles
+        const sampler = new SamplerCtor(def.art
+          ? { minificationFilter: Cesium.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 8 }
+          : { minificationFilter: Cesium.TextureMinificationFilter.LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 4 });
+        const t = new TextureCtor({ context: ctx, source: cv, sampler });
+        if (def.art) { try { t.generateMipmap(); } catch { /* NPOT on WebGL1: falls back to base level */ } }
+        entry = { cv, tex: t, live: !def.art };
+        this.textures.set(key, entry);
       }
       const tex = entry.tex;
       const material = new Cesium.Material({ fabric: { type: 'Image', uniforms: { image: Cesium.Material.DefaultImageId } } });
       (material.uniforms as Record<string, unknown>).image = tex;
+      if (def.art?.dim) (material.uniforms as Record<string, unknown>).color = new Cesium.Color(1, 1, 1, 1);
       const prim = this.scene.primitives.add(new Cesium.Primitive({
         geometryInstances: new Cesium.GeometryInstance({ geometry: quad(def) }),
         appearance: new Cesium.MaterialAppearance({ material, flat: true, translucent: false, faceForward: false, closed: false,
           renderState: { cull: { enabled: false }, depthTest: { enabled: true } } }),
         asynchronous: false, compressVertices: false, show: false,
       })) as Cesium.Primitive;
-      this.screens.push({ def, prim });
+      this.screens.push({ def, prim, material });
     }
   }
 
   /** Per frame. `mm` is the aircraft model matrix (same frame as the exterior model). */
-  update(ac: Aircraft, av: AvData, mm: Cesium.Matrix4, show: boolean, dt: number, input: { pitch: number; roll: number; throttle: number[]; collective: number }) {
+  update(ac: Aircraft, av: AvData, mm: Cesium.Matrix4, show: boolean, dt: number, input: { pitch: number; roll: number; throttle: number[]; collective: number }, light = 1) {
     this.visible = show;
     if (!this.model) return;
     this.model.show = show;
     Cesium.Matrix4.clone(mm, this.model.modelMatrix);
     for (const s of this.screens) { s.prim.show = show; Cesium.Matrix4.clone(mm, s.prim.modelMatrix); }
     if (!show) return;
+    // painted (unlit) surfaces follow the ambient light so they don't glow at night
+    const k = Math.round(Math.max(0.22, Math.min(1, light)) * 50) / 50;
+    if (k !== this.light) {
+      this.light = k;
+      for (const s of this.screens) if (s.def.art?.dim) (s.material.uniforms as Record<string, unknown>).color = new Cesium.Color(k, k, k, 1);
+    }
     if (this.model.ready) {
       for (const lv of this.levers) {
         const node = this.model.getNode(lv.node);
@@ -134,7 +154,7 @@ export class Cockpit3D {
     this.six?.draw(av, 1 / 20);
     drawFcu(this.fcu, av, ac);
     for (const [src, t] of this.textures) {
-      if (src === 'ovh') continue;
+      if (!t.live) continue;
       if (!sys.avionicsPowered && src !== 'six') { const g = t.cv.getContext('2d')!; g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#05070a'; g.fillRect(0, 0, t.cv.width, t.cv.height); }
       try { (t.tex as { copyFrom(o: object): void }).copyFrom({ source: t.cv }); } catch { /* size changed mid-flight: ignore this frame */ }
     }
@@ -182,6 +202,27 @@ function onPanel(x0: number, z0: number, tilt: number, y: number, z: number, ins
   return [x0 + (z0 - z) * Math.tan(tilt * Math.PI / 180) + inset, y, z];
 }
 
+/** Painted surface covering a tilted instrument panel, with the screens' positions passed to the painter. */
+function panelArt(key: string, px: number, pz0: number, pz1: number, tilt: number, yL: number, yR: number, scr: ScreenDef[], ppm: number,
+  painter: (w: number, h: number, rects: Rect[], toX: (y: number) => number) => (g: CanvasRenderingContext2D) => void): ScreenDef {
+  const c = Math.cos(tilt * Math.PI / 180);
+  const w = yR - yL, h = (pz1 - pz0) / c;
+  const toX = (y: number) => y - yL;
+  const rects: Rect[] = scr.filter(s => !s.art && s.src !== 'fcu').map(s => ({ x: toX(s.c[1]), y: (s.c[2] - pz0) / c, w: s.w, h: s.h, kind: s.src }));
+  return { src: 'art', art: surface(key, w, h, ppm, painter(w, h, rects, toX)), c: onPanel(px, pz0, tilt, (yL + yR) / 2, (pz0 + pz1) / 2, ART_INSET), r: [0, 1, 0], u: tiltUp(tilt), w, h };
+}
+/** Painted quad on a flat surface given front-left, front-right and aft-left corners (texture top = front). */
+function flatArt(art: Art, fl: P3, fr: P3, al: P3, lift = 0.004): ScreenDef {
+  const r0: P3 = [fr[0] - fl[0], fr[1] - fl[1], fr[2] - fl[2]], u0: P3 = [fl[0] - al[0], fl[1] - al[1], fl[2] - al[2]];
+  const w = Math.hypot(...r0), h = Math.hypot(...u0);
+  const r = mul(r0, 1 / w), u = mul(u0, 1 / h);
+  const n: P3 = [r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0]];
+  const c = add(add(fl, add(mul(r0, 0.5), mul(u0, -0.5))), mul(n, lift));
+  return { src: 'art', art, c, r, u, w, h };
+}
+/** Clear windscreen / side-window panes (a faint tint and reflection sell the glass). */
+function glassPanes(p: Part, quads: P3[][]) { for (const q of quads) face(p, q[0], q[1], q[2], q[3]); }
+
 // ───────────────────────── airliner ─────────────────────────
 function buildAirliner(ac: Aircraft, E: P3) {
   const d = ac.def;
@@ -189,8 +230,9 @@ function buildAirliner(ac: Aircraft, E: P3) {
   const boeingish = !airbus;
   const [ex, ey, ez] = E;
   const W = Math.min(1.25, d.dia * 0.36 + 0.2);
-  const shell = new Part(airbus ? '#6e7b86' : '#8b9096', 0.05, 0.75);
-  const panelC = new Part(airbus ? '#45505a' : '#3d4146', 0.05, 0.8);
+  const shell = new Part(airbus ? '#74838f' : '#8b9096', 0.05, 0.75);
+  const panelC = new Part(airbus ? '#56636e' : '#55595e', 0.05, 0.8);
+  const glass = new Part('#9fc3e3', 0.0, 0.05, 0.07);
   const dark = new Part('#1d2125', 0.1, 0.7);
   const glare = new Part('#26292d', 0.05, 0.9);
   const metal = new Part('#a9afb5', 0.7, 0.35);
@@ -203,8 +245,6 @@ function buildAirliner(ac: Aircraft, E: P3) {
   // glareshield (flat top + sloped lip), FCU strip on its aft face
   slab(glare, [px - 0.24, -W, pz0 - 0.07], [px - 0.24, W, pz0 - 0.07], [px + 0.1, W, pz0 - 0.1], [px + 0.1, -W, pz0 - 0.1], 0.02);
   slab(glare, [px - 0.24, -W, pz0 - 0.07], [px - 0.24, W, pz0 - 0.07], [px - 0.2, W, pz0 + 0.02], [px - 0.2, -W, pz0 + 0.02], 0.02);
-  // EFIS control panels at each end of the glareshield
-  for (const s of [-1, 1]) box(dark, [px - 0.235, s * (Math.abs(ey) + 0.08), pz0 - 0.03], [0.02, 0.16, 0.05]);
   // pedestal
   const pedTop = ez + 0.6;
   slab(panelC, [ex + 0.72, -0.24, pedTop - 0.08], [ex + 0.72, 0.24, pedTop - 0.08], [ex - 0.4, 0.24, pedTop], [ex - 0.4, -0.24, pedTop], 0.02);
@@ -242,7 +282,11 @@ function buildAirliner(ac: Aircraft, E: P3) {
     box(seat, [ex - 0.32, sy, ez + 0.25], [0.12, 0.5, 0.75]);
     box(seat, [ex - 0.3, sy, ez - 0.08], [0.14, 0.28, 0.18]);
   }
-  const nodes: NodeDef[] = [{ name: 'deck', parts: [shell, panelC, dark, glare, metal, seat, floor] }];
+  glassPanes(glass, [
+    [[px + 0.12, -W, pz0 - 0.1], [px + 0.12, W, pz0 - 0.1], [roofF[0] + 0.02, W * 0.95, roofF[2]], [roofF[0] + 0.02, -W * 0.95, roofF[2]]],
+    ...[-1, 1].map(s => [[px - 0.1, s * W * 1.0, sillZ], [ex - 0.45, s * W, sillZ], [ex - 0.45, s * W * 0.96, ez - 0.48], [px - 0.05, s * W * 0.94, roofF[2] + 0.02]] as P3[]),
+  ]);
+  const nodes: NodeDef[] = [{ name: 'deck', parts: [shell, panelC, dark, glare, metal, seat, floor, glass] }];
   const levers: Lever[] = [];
   // flight controls
   if (airbus) {
@@ -283,14 +327,21 @@ function buildAirliner(ac: Aircraft, E: P3) {
   }
   // screens: Captain PFD/ND outboard→inboard, centre EICAS (+ lower), F/O mirrored; FCU on the glareshield
   const sz = 0.2, zc = ez + 0.43, ay = Math.abs(ey);
-  const S = (src: Src, y: number, z = zc, w = sz, h = sz) => screen(src, onPanel(px, pz0, tilt, y, z, -0.032), w, h, tilt);
+  const S = (src: Src, y: number, z = zc, w = sz, h = sz) => screen(src, onPanel(px, pz0, tilt, y, z, SCREEN_INSET), w, h, tilt);
   const screens: ScreenDef[] = [
     S('pfd', -(ay + 0.12)), S('nd', -(ay - 0.12)), S('eicas', 0, zc - 0.01),
     S('nd', ay - 0.12), S('pfd', ay + 0.12),
     S('pfd', -0.17, zc + 0.08, 0.09, 0.09),
     { src: 'fcu', c: [px - 0.232, 0, pz0 - 0.025], r: [0, 1, 0], u: [0.4, 0, -0.92], w: 0.9, h: 0.085 },
-    { src: 'ovh', c: [roofF[0] - 0.15 - (roofF[0] - 0.15 - (ex - 0.6)) / 2, 0, (roofF[2] + 0.05 + ez - 0.48) / 2 + 0.005], r: [0, 1, 0], u: [1, 0, 0.12], w: 0.98, h: Math.hypot(roofF[0] - 0.15 - (ex - 0.6), roofF[2] + 0.05 - (ez - 0.48)) * 0.96 },
   ];
+  screens.push(panelArt('panel', px, pz0, pz1, tilt, -W, W, screens, 1500, (w, h, rects, toX) => airlinerPanel(w, h, rects, airbus, ay, toX)));
+  const efis = efisPanel(airbus);
+  for (const s of [-1, 1]) screens.push({ src: 'art', art: efis, c: [px - 0.236, s * (ay + 0.1), pz0 - 0.025], r: [0, 1, 0], u: [0.4, 0, -0.92], w: 0.2, h: 0.075 });
+  screens.push(flatArt(pedestalArt(airbus, nThr, 0.48, Math.hypot(1.12, 0.08)), [ex + 0.72, -0.24, pedTop - 0.08], [ex + 0.72, 0.24, pedTop - 0.08], [ex - 0.4, -0.24, pedTop]));
+  // overhead, read from below: texture top = aft edge, right = +y
+  const oF: P3 = [roofF[0] - 0.15, 0, roofF[2] + 0.05], oA: P3 = [ex - 0.6, 0, ez - 0.48];
+  const oW = 0.98, oH = Math.hypot(oF[0] - oA[0], oF[2] - oA[2]) * 0.96;
+  screens.push(flatArt(overheadArt('airliner', oW, oH), [oA[0], -oW / 2, oA[2] + 0.002], [oA[0], oW / 2, oA[2] + 0.002], [oF[0], -oW / 2, oF[2] + 0.002], 0.046)); // below the 4 cm overhead slab
   return { nodes, screens, levers };
 }
 
@@ -351,10 +402,11 @@ function buildGa(ac: Aircraft, E: P3) {
   nodes.push({ name: 'thr0', parts: [thr], translation: [px - 0.03, 0.0, ez + 0.44] });
   levers.push({ node: 'thr0', kind: 'thr', idx: 0 });
   const ay = Math.abs(ey) || 0.15;
-  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, -0.032), w, h, tilt);
+  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, SCREEN_INSET), w, h, tilt);
   const screens: ScreenDef[] = d.cockpit === 'steam'
     ? [S('six', -ay + 0.02, ez + 0.32, 0.36, 0.24), ...(d.cat === 'glider' ? [] : [S('nd', ay - 0.02, ez + 0.3, 0.18, 0.18)]), S('eicas', ay + 0.2, ez + 0.32, 0.14, 0.14)]
     : [S('pfd', -ay + 0.02, ez + 0.3, 0.26, 0.21), S('nd', ay - 0.02, ez + 0.3, 0.26, 0.21), S('eicas', 0.0, ez + 0.47, 0.1, 0.07)];
+  screens.push(panelArt('panel', px, pz0, pz1, tilt, -W, W, screens, 1600, (w, h, rects, toX) => gaPanel(w, h, rects, d.cockpit === 'steam', toX)));
   return { nodes, screens, levers };
 }
 
@@ -390,8 +442,9 @@ function buildFighter(ac: Aircraft, E: P3) {
   cyl(th, [0, 0, 0], [0, 0, -0.12], 0.015, 0.015, 8);
   box(th, [0, 0, -0.14], [0.06, 0.05, 0.05]);
   nodes.push({ name: 'thr0', parts: [th], translation: [ex + 0.1, -(W - 0.1), ez + 0.38] });
-  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, -0.032), w, h, tilt);
+  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, SCREEN_INSET), w, h, tilt);
   const screens: ScreenDef[] = [S('pfd', -0.17, ez + 0.45, 0.16, 0.16), S('nd', 0.17, ez + 0.45, 0.16, 0.16), S('eicas', 0, ez + 0.53, 0.11, 0.11)];
+  screens.push(panelArt('panel', px, pz0, pz1, tilt, -W, W, screens, 1800, (w, h, rects, toX) => fighterPanel(w, h, rects, toX)));
   return { nodes, screens, levers: [{ node: 'stick', kind: 'stick' }, { node: 'thr0', kind: 'thr', idx: 0 }] as Lever[] };
 }
 
@@ -428,8 +481,9 @@ function buildHeli(ac: Aircraft, E: P3) {
   cyl(co, [0.45, 0, -0.05], [0.55, 0, -0.06], 0.025, 0.025, 8);
   nodes.push({ name: 'coll', parts: [co], translation: [ex - 0.2, ey - 0.28, ez + 0.65] });
   const ay = Math.abs(ey);
-  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, -0.032), w, h, tilt);
+  const S = (src: Src, y: number, z: number, w: number, h: number) => screen(src, onPanel(px, pz0, tilt, y, z, SCREEN_INSET), w, h, tilt);
   const screens: ScreenDef[] = [S('pfd', -ay - 0.08, ez + 0.44, 0.2, 0.2), S('nd', -ay + 0.16, ez + 0.44, 0.2, 0.2), S('eicas', 0.14, ez + 0.44, 0.17, 0.17), S('pfd', ay + 0.2, ez + 0.44, 0.2, 0.2)];
+  screens.push(panelArt('panel', px, pz0, pz1, tilt, -W * 0.85, W * 0.85, screens, 1500, (w, h, rects, toX) => heliPanel(w, h, rects, toX)));
   return { nodes, screens, levers: [{ node: 'cyclic', kind: 'stick' }, { node: 'coll', kind: 'coll' }] as Lever[] };
 }
 
@@ -463,27 +517,4 @@ function drawFcu(cv: HTMLCanvasElement, av: AvData, ac: Aircraft) {
     if (lit && on) { g.fillStyle = C.green; g.fillRect(x + 18, y + 6, 50, 6); }
   });
   void ac;
-}
-
-function drawOverhead(cv: HTMLCanvasElement, kind: string) {
-  const g = cv.getContext('2d')!;
-  const W = cv.width, H = cv.height;
-  g.fillStyle = kind === 'airliner' ? '#4a5661' : '#3a3f45'; g.fillRect(0, 0, W, H);
-  const panels = ['ADIRS', 'FLT CTL', 'EVAC', 'GPWS', 'RCDR', 'OXYGEN', 'CALLS', 'ELEC', 'HYD', 'FUEL', 'AIR COND', 'ANTI ICE', 'APU', 'EXT LT', 'INT LT', 'SIGNS', 'ENG', 'WIPER'];
-  const cols = 6, rows = 3, pw = W / cols, ph = H / rows;
-  let rnd = 7;
-  const rand = () => ((rnd = (rnd * 16807) % 2147483647) / 2147483647);
-  panels.forEach((name, i) => {
-    const x = (i % cols) * pw, y = Math.floor(i / cols) * ph;
-    g.strokeStyle = '#2a3036'; g.lineWidth = 3; g.strokeRect(x + 4, y + 4, pw - 8, ph - 8);
-    g.fillStyle = '#e8edf2'; g.font = `bold 15px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'top';
-    g.fillText(name, x + pw / 2, y + 10);
-    const n = 3 + Math.floor(rand() * 4);
-    for (let k = 0; k < n; k++) {
-      const bx = x + 18 + (k % 3) * ((pw - 36) / 3), by = y + 40 + Math.floor(k / 3) * 58;
-      g.fillStyle = '#1b1f23'; g.fillRect(bx, by, 40, 34);
-      g.fillStyle = rand() > 0.75 ? '#e0e6ea' : '#5b6670'; g.fillRect(bx + 6, by + 22, 28, 6);
-      g.fillStyle = '#cfd6dc'; g.font = `11px ${FONT}`; g.fillText(['ON', 'AUTO', 'OFF', 'ARM', 'NORM'][Math.floor(rand() * 5)], bx + 20, by + 4);
-    }
-  });
 }

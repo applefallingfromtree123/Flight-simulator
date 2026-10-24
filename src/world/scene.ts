@@ -247,7 +247,7 @@ export class World {
   // ───────────────────────── aircraft model ─────────────────────────
   async loadAircraft(ac: Aircraft, liveryId?: string) {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
-    const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId));
+    const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId), this.opts.quality === 'low' ? 0.5 : 1);
     const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
     this.model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, color: Cesium.Color.WHITE });
     this.scene.primitives.add(this.model);

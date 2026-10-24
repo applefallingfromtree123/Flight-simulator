@@ -557,7 +557,7 @@ class App {
     const lightsOn = { nav: s.sw.nav && s.elecPowered, beacon: s.sw.beacon && s.elecPowered, strobe: s.sw.strobe && s.elecPowered, landing: (s.sw.landing || s.sw.taxi) && s.elecPowered };
     w.updateAircraft(ac, running ? dtReal * rate : 0, lightsOn, performance.now() / 1000);
     w.cockpit3d.update(ac, this.av, w.acMatrix, w.view === 'cockpit' && w.deck3d, dtReal,
-      { pitch: c.pitch, roll: c.roll, throttle: ac.engineCmd.map(e => e.throttle), collective: ac.collective });
+      { pitch: c.pitch, roll: c.roll, throttle: ac.engineCmd.map(e => e.throttle), collective: ac.collective }, 1 - w.nightFactor(ac.lat, ac.lon) * 0.75);
     w.updateCamera(ac, dtReal);
     const night = w.nightFactor(ac.lat, ac.lon);
     const eyeAlt = w.view === 'cockpit' || w.view === 'cockpit-hud' ? ac.alt : w.scene.camera.positionCartographic.height - w.geoidOffset;

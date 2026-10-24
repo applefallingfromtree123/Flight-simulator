@@ -5,7 +5,7 @@ import { DEG, clamp } from '../core/math.ts';
 import type { AeroModel } from '../sim/aero.ts';
 import type { AircraftDef } from '../sim/types.ts';
 import type { Livery } from './liveries.ts';
-import { canvasPng, paintFin, paintFuselage, type FinGeom, type FuselageGeom } from './liveryTex.ts';
+import { canvasImage, paintFin, paintFuselage, type FinGeom, type FuselageGeom } from './liveryTex.ts';
 
 export type P3 = [number, number, number];
 
@@ -128,18 +128,18 @@ export interface ModelNodes { props: { name: string; pos: P3; axis: 'x' | 'z'; d
 
 export interface NodeDef { name: string; parts: Part[]; translation?: P3 }
 
-export async function buildAircraftGlb(ac: AircraftDef, aero: AeroModel, liv: Livery): Promise<{ glb: ArrayBuffer; nodes: ModelNodes }> {
+export async function buildAircraftGlb(ac: AircraftDef, aero: AeroModel, liv: Livery, texRes = 1): Promise<{ glb: ArrayBuffer; nodes: ModelNodes }> {
   const body = new Part(liv.body, 0.15, 0.38);
   const skin = new Part('#ffffff', 0.04, 0.42); skin.tex = 0;        // painted fuselage
   const finSkin = new Part('#ffffff', 0.04, 0.42); finSkin.tex = 1;  // painted fin
   const tail = new Part(liv.tail.bg, 0.15, 0.38);
   const stab = new Part(liv.stab ?? (ac.cat === 'airliner' || ac.cat === 'widebody' || ac.cat === 'regional' ? '#d9dde1' : liv.body), 0.2, 0.42);
   const glass = new Part('#0b1520', 0.6, 0.12);
-  const engine = new Part(liv.engine, 0.45, 0.32);
+  const engine = new Part(liv.engine, 0.12, 0.4);
   const dark = new Part('#1b1d20', 0.3, 0.6);
   const metal = new Part('#9aa0a6', 0.8, 0.3);
   const tire = new Part('#151515', 0, 0.9);
-  const wingC = new Part(liv.wing ?? (ac.cockpit === 'fighter' || ac.cat === 'vintage' || ac.cat === 'helicopter' ? liv.body : '#cfd3d8'), 0.3, 0.42);
+  const wingC = new Part(liv.wing ?? (ac.cockpit === 'fighter' || ac.cat === 'vintage' || ac.cat === 'helicopter' ? liv.body : '#cfd3d8'), 0.08, 0.55);
   const nodes: NodeDef[] = [];
   const meta: ModelNodes = { props: [], gear: [] };
   const L = ac.L, dia = ac.dia, b = ac.b;
@@ -426,7 +426,7 @@ export async function buildAircraftGlb(ac: AircraftDef, aero: AeroModel, liv: Li
   else nodes.push({ name: 'gearFixed', parts: gearParts });
 
   const main: Part[] = [skin, finSkin, body, tail, stab, glass, engine, dark, metal, wingC];
-  const images = await Promise.all([canvasPng(paintFuselage(liv, geo)), canvasPng(paintFin(liv, fin))]);
+  const images = await Promise.all([canvasImage(paintFuselage(liv, geo, texRes)), canvasImage(paintFin(liv, fin, texRes))]);
   return { glb: writeGlb([{ name: 'body', parts: main }, ...nodes], images), nodes: meta };
 }
 
@@ -440,7 +440,7 @@ function hexToRgb(hex: string): [number, number, number] {
   return [lin(n >> 16), lin((n >> 8) & 255), lin(n & 255)];
 }
 
-export function writeGlb(nodes: NodeDef[], images: Uint8Array[] = []): ArrayBuffer {
+export function writeGlb(nodes: NodeDef[], images: { data: Uint8Array; mime: string }[] = []): ArrayBuffer {
   const bufs: ArrayBuffer[] = [];
   let offset = 0;
   const bufferViews: object[] = [], accessors: object[] = [], meshes: object[] = [], materials: object[] = [];
@@ -501,7 +501,7 @@ export function writeGlb(nodes: NodeDef[], images: Uint8Array[] = []): ArrayBuff
     const t = nd.translation;
     gnodes.push({ name: nd.name, mesh: meshes.length - 1, ...(t ? { translation: [-t[1], -t[2], t[0]] } : {}) });
   }
-  const imgs = images.map(png => ({ bufferView: push(png), mimeType: 'image/png' }));
+  const imgs = images.map(im => ({ bufferView: push(im.data), mimeType: im.mime }));
   const json = {
     asset: { version: '2.0', generator: 'SkyLine procedural aircraft' },
     ...(imgs.length ? {

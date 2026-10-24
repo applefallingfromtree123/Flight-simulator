@@ -31,8 +31,9 @@ function lum(hex: string) {
   return (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) / 255;
 }
 
-export function paintFuselage(liv: Livery, geo: FuselageGeom): HTMLCanvasElement {
-  const W = 2048, H = 1024;
+/** res: 1 = full resolution, 0.5 = low-quality setting. */
+export function paintFuselage(liv: Livery, geo: FuselageGeom, res = 1): HTMLCanvasElement {
+  const W = Math.round((geo.L >= 45 ? 4096 : geo.L >= 18 ? 3072 : 2048) * res), H = W / 2;
   const cv = mkCanvas(W, H);
   const g = cv.getContext('2d')!;
   const { L, r } = geo;
@@ -69,6 +70,23 @@ export function paintFuselage(liv: Livery, geo: FuselageGeom): HTMLCanvasElement
     g.fillStyle = liv.nose;
     g.fillRect(0, 0, geo.noseLen * 0.38 * ku, H);
   }
+  // soft ambient occlusion toward the belly and a faint sheen on the crown (reads as curvature)
+  for (let y = 0; y < H; y += 2) {
+    const hn = Math.cos((y + 1) / H * Math.PI * 2);
+    if (hn < -0.35) { g.fillStyle = `rgba(0,0,0,${(0.13 * (-hn - 0.35) / 0.65).toFixed(3)})`; g.fillRect(0, y, W, 2); }
+    else if (hn > 0.75) { g.fillStyle = `rgba(255,255,255,${(0.07 * (hn - 0.75) / 0.25).toFixed(3)})`; g.fillRect(0, y, W, 2); }
+  }
+  // skin panel joints: circumferential frames + longitudinal lap joints, radome seam
+  g.fillStyle = 'rgba(0,0,0,0.07)';
+  const lw = Math.max(1, W / 2600);
+  const frame = geo.kind === 'ga' || geo.kind === 'heli' ? 0.9 : geo.kind === 'widebody' ? 2.6 : 2.1;
+  for (let sx = geo.noseLen; sx < L * 0.97; sx += frame) g.fillRect(sx * ku, 0, lw, H);
+  for (const hn of [0.62, -0.42]) for (const side of [1, -1]) {
+    const a = Math.acos(hn) / (2 * Math.PI) * H, y = side > 0 ? a : H - a;
+    g.fillRect(geo.noseLen * ku, y, (L * 0.95 - geo.noseLen) * ku, lw);
+  }
+  g.fillStyle = 'rgba(0,0,0,0.16)';
+  if (geo.kind !== 'ga' && geo.kind !== 'heli') g.fillRect(geo.noseLen * 0.36 * ku, 0, lw * 1.5, H);
   // per-side drawing in (s = m aft of nose, h = m up from the centreline)
   const side = (s: 'L' | 'R', fn: (g: CanvasRenderingContext2D, dir: number) => void) => {
     g.save();
@@ -112,22 +130,36 @@ export function paintFuselage(liv: Livery, geo: FuselageGeom): HTMLCanvasElement
       ? [geo.noseLen + 0.6, geo.noseLen + (s1 - geo.noseLen) * 0.3, geo.noseLen + (s1 - geo.noseLen) * 0.62, s1 - 0.4]
       : [geo.noseLen + 0.6, s1 - 0.2];
     const dW = biz ? 0.75 : 0.9, dH = biz ? 1.5 : 1.85;
-    if (geo.decks === 2) both(gg => {
-      gg.fillStyle = '#161b22';
-      for (let s = s0 + 1; s < s1 - 3; s += pitch) { rrect(s - ww / 2, r * 0.62 - wh / 2, ww, wh, Math.min(ww, wh) * 0.45); gg.fill(); }
-    });
+    /** One cabin window: rubber seal, tinted glass, sky reflection on the upper half. */
+    const win = (gg: CanvasRenderingContext2D, cx: number, cy: number) => {
+      const rr = Math.min(ww, wh) * 0.45;
+      gg.fillStyle = 'rgba(0,0,0,0.22)'; rrect(cx - ww / 2 - 0.025, cy - wh / 2 - 0.025, ww + 0.05, wh + 0.05, rr + 0.02); gg.fill();
+      gg.fillStyle = '#121821'; rrect(cx - ww / 2, cy - wh / 2, ww, wh, rr); gg.fill();
+      gg.fillStyle = 'rgba(150,180,210,0.28)'; rrect(cx - ww / 2 + 0.02, cy + wh * 0.05, ww - 0.04, wh * 0.4, rr * 0.6); gg.fill();
+    };
+    const overwing = geo.kind === 'airliner' ? [L * 0.44, L * 0.47] : [];
+    if (geo.decks === 2) both(gg => { for (let s = s0 + 1; s < s1 - 3; s += pitch) win(gg, s, r * 0.62); });
     both(gg => {
-      gg.fillStyle = '#161b22';
       for (let s = s0; s < s1; s += pitch) {
         if (doors.some(d => Math.abs(s - (d + dW / 2)) < dW / 2 + 0.35)) continue;
-        rrect(s - ww / 2, winH - wh / 2, ww, wh, Math.min(ww, wh) * 0.45); gg.fill();
+        win(gg, s, winH);
       }
-      gg.strokeStyle = 'rgba(20,24,30,0.55)'; gg.lineWidth = 0.03;
+      gg.lineWidth = 0.022;
       for (const d of doors) {
-        rrect(d, winH - dH * 0.62, dW, dH, 0.12); gg.stroke();
-        gg.fillStyle = '#161b22';
-        rrect(d + dW / 2 - ww / 2, winH - wh / 2, ww, wh, Math.min(ww, wh) * 0.45); gg.fill();
+        gg.strokeStyle = 'rgba(0,0,0,0.2)'; rrect(d - 0.03, winH - dH * 0.62 - 0.03, dW + 0.06, dH + 0.06, 0.15); gg.stroke();
+        gg.strokeStyle = 'rgba(20,24,30,0.6)'; rrect(d, winH - dH * 0.62, dW, dH, 0.12); gg.stroke();
+        win(gg, d + dW / 2, winH);
+        gg.fillStyle = 'rgba(30,34,40,0.55)'; gg.fillRect(d + dW * 0.15, winH - dH * 0.25, dW * 0.22, 0.05); // handle
       }
+      // overwing emergency exits
+      gg.strokeStyle = 'rgba(20,24,30,0.5)';
+      for (const ow of overwing) { rrect(ow - 0.26, winH - 0.5, 0.52, 0.95, 0.1); gg.stroke(); }
+    });
+    // cargo doors on the right-hand lower lobe
+    if (geo.kind === 'airliner' || geo.kind === 'widebody') side('R', gg => {
+      gg.strokeStyle = 'rgba(15,18,22,0.5)'; gg.lineWidth = 0.025;
+      const cw = geo.kind === 'widebody' ? 2.7 : 1.8, ch = geo.kind === 'widebody' ? 1.7 : 1.25;
+      for (const cs of [geo.noseLen + 0.17 * L, geo.tailStart - 0.12 * L]) { rrect(cs, -r * 0.42 - ch / 2, cw, ch, 0.1); gg.stroke(); }
     });
   }
   // flight-deck windows (glass painted on; the model has no separate canopy for airliners)
@@ -138,6 +170,9 @@ export function paintFuselage(liv: Livery, geo: FuselageGeom): HTMLCanvasElement
       const top = r * 0.52, bot = r * 0.26;
       gg.beginPath(); gg.moveTo(n * 0.6, bot); gg.lineTo(n * 0.74, top); gg.lineTo(n * 0.86, top); gg.lineTo(n * 0.86, bot); gg.closePath(); gg.fill();
       gg.beginPath(); gg.moveTo(n * 0.89, bot); gg.lineTo(n * 0.89, top * 0.98); gg.lineTo(n * 1.02, top * 0.9); gg.lineTo(n * 1.02, bot); gg.closePath(); gg.fill();
+      gg.strokeStyle = 'rgba(0,0,0,0.35)'; gg.lineWidth = 0.035;
+      gg.beginPath(); gg.moveTo(n * 0.6, bot); gg.lineTo(n * 0.74, top); gg.lineTo(n * 0.86, top); gg.lineTo(n * 0.86, bot); gg.closePath(); gg.stroke();
+      gg.beginPath(); gg.moveTo(n * 0.89, bot); gg.lineTo(n * 0.89, top * 0.98); gg.lineTo(n * 1.02, top * 0.9); gg.lineTo(n * 1.02, bot); gg.closePath(); gg.stroke();
       gg.fillStyle = 'rgba(160,190,220,0.18)';
       gg.beginPath(); gg.moveTo(n * 0.62, bot * 1.15); gg.lineTo(n * 0.7, top * 0.9); gg.lineTo(n * 0.73, top * 0.9); gg.lineTo(n * 0.66, bot * 1.15); gg.closePath(); gg.fill();
     });
@@ -165,8 +200,8 @@ export function paintFuselage(liv: Livery, geo: FuselageGeom): HTMLCanvasElement
 }
 
 /** aspect = fin width / height (side-view bounding box). */
-export function paintFin(liv: Livery, fin: FinGeom): HTMLCanvasElement {
-  const HW = 512, H = Math.max(128, Math.min(1024, Math.round(HW / Math.max(0.2, fin.aspect))));
+export function paintFin(liv: Livery, fin: FinGeom, res = 1): HTMLCanvasElement {
+  const HW = Math.round(1024 * res), H = Math.max(256, Math.min(2048, Math.round(HW / Math.max(0.2, fin.aspect))));
   const cv = mkCanvas(HW * 2, H);
   const g = cv.getContext('2d')!;
   g.fillStyle = liv.tail.bg; g.fillRect(0, 0, HW * 2, H);
@@ -183,6 +218,12 @@ export function paintFin(liv: Livery, fin: FinGeom): HTMLCanvasElement {
     g.save();
     g.beginPath(); g.rect(half * HW, 0, HW, H); g.clip();
     for (const s of liv.tail.shapes ?? []) drawShape(g, s, P, R, fwd, H);
+    // rudder hinge line, tip cap and a couple of fin panel joints
+    g.strokeStyle = 'rgba(0,0,0,0.22)'; g.lineWidth = Math.max(1.5, HW / 400);
+    const ln = (pts: [number, number][]) => { g.beginPath(); pts.forEach(([x, y], i) => { const p = P(x, y); if (i) g.lineTo(p[0], p[1]); else g.moveTo(p[0], p[1]); }); g.stroke(); };
+    ln([[0.7, 0.04], [0.7, 0.96]]); ln([[0.0, 0.965], [1, 0.965]]);
+    g.strokeStyle = 'rgba(0,0,0,0.08)';
+    ln([[0.0, 0.35], [0.7, 0.35]]); ln([[0.0, 0.68], [0.7, 0.68]]);
     g.restore();
   }
   return cv;
@@ -257,7 +298,10 @@ function drawShape(g: CanvasRenderingContext2D, s: TailShape, P: (x: number, y: 
   }
 }
 
-export async function canvasPng(cv: HTMLCanvasElement): Promise<Uint8Array> {
-  const blob = await new Promise<Blob>((res, rej) => cv.toBlob(b => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'));
-  return new Uint8Array(await blob.arrayBuffer());
+/** Encode for the GLB. JPEG keeps big liveries small and fast to encode; PNG as a fallback. */
+export async function canvasImage(cv: HTMLCanvasElement, mime: 'image/jpeg' | 'image/png' = 'image/jpeg'): Promise<{ data: Uint8Array; mime: string }> {
+  const blob = await new Promise<Blob | null>(res => cv.toBlob(b => res(b), mime, 0.93));
+  if (blob && blob.type === mime) return { data: new Uint8Array(await blob.arrayBuffer()), mime };
+  const png = await new Promise<Blob>((res, rej) => cv.toBlob(b => (b ? res(b) : rej(new Error('toBlob failed'))), 'image/png'));
+  return { data: new Uint8Array(await png.arrayBuffer()), mime: 'image/png' };
 }

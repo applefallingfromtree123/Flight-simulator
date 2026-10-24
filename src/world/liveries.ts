@@ -152,9 +152,11 @@ const S: Record<string, Airline> = {
   offshore: { name: '해상 운송 (Offshore)', body: '#f1f1f1', bands: [{ from: -1, to: -0.3, c: '#0a3d62' }], lines: [{ h: -0.3, w: 0.06, c: '#f39c12' }], tail: { bg: '#0a3d62' }, engine: '#3a3a3a' },
 };
 
+/** Registration patterns: # = digit, @ = letter (matching each operator's national prefix and fleet style). */
 const AIRLINE_REG: Record<string, string> = {
-  kal: 'HL8', aar: 'HL8', jja: 'HL8', jal: 'JA', ana: 'JA', dlh: 'D-A', ezy: 'G-EZ', baw: 'G-', aca: 'C-F', aal: 'N', dal: 'N', ual: 'N', swa: 'N',
-  ryr: 'EI-', afr: 'F-', sia: '9V-', cpa: 'B-', qfa: 'VH-', uae: 'A6-', qtr: 'A7-', klm: 'PH-', ces: 'B-', azu: 'PR-', anz: 'ZK-', fdx: 'N', airbus: 'F-W', boeing: 'N', comac: 'B-', embraer: 'PR-', atr: 'F-W',
+  kal: 'HL8###', aar: 'HL8###', jja: 'HL8###', jal: 'JA###J', ana: 'JA###A', dlh: 'D-A@@@', ezy: 'G-EZ@@', baw: 'G-@@@@', aca: 'C-F@@@', aal: 'N###AA', dal: 'N###DN',
+  ual: 'N###UA', swa: 'N###WN', ryr: 'EI-@@@', afr: 'F-G@@@', sia: '9V-S@@', cpa: 'B-L@@', qfa: 'VH-O@@', uae: 'A6-E@@', qtr: 'A7-A@@', klm: 'PH-@@@', ces: 'B-####',
+  azu: 'PR-A@@', anz: 'ZK-N@@', fdx: 'N###FE', airbus: 'F-W@@@', boeing: 'N###BA', comac: 'B-####', embraer: 'PR-Z@@', atr: 'F-W@@@',
 };
 
 /** Operator schemes offered per aircraft type (first = default). */
@@ -174,15 +176,10 @@ const BY_TYPE: Record<string, string[]> = {
 function hash(s: string) { let h = 2166136261; for (const ch of s) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); return h >>> 0; }
 
 function regFor(key: string, ac: AircraftDef): string {
-  const p = AIRLINE_REG[key] ?? 'N';
-  const h = hash(key + ac.id);
   const L = 'ABCDEFGHJKLMNPRSTUVWXYZ';
-  if (p === 'N') return `N${100 + (h % 899)}${L[h % L.length]}${L[(h >> 5) % L.length]}`;
-  if (p === 'HL8') return `HL8${String(h % 1000).padStart(3, '0')}`;
-  if (p === 'JA') return `JA${String(800 + (h % 199))}${L[h % L.length]}`;
-  if (p === 'B-') return `B-${String(1000 + (h % 8999))}`;
-  const len = p.endsWith('-') ? 3 : Math.max(1, 5 - p.length);
-  return p + Array.from({ length: len }, (_, i) => L[(h >> (i * 5)) % L.length]).join('');
+  let h = hash(key + ac.id);
+  const next = (n: number) => { const v = h % n; h = Math.floor(h / n) || hash(String(h) + key); return v; };
+  return (AIRLINE_REG[key] ?? 'N###@@').replace(/[#@]/g, c => (c === '#' ? String(next(10)) : L[next(L.length)]));
 }
 
 /** Manufacturer / owner scheme built from the type's base colours (GA, bizjets, others). */
