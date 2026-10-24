@@ -158,6 +158,7 @@ export class World {
       watchAsync(layer, 'Google 위성지도 (API 키 / Map Tiles API 활성화 확인)');
       layers.add(layer);
     } else if (src === 'bing-ion' && this.opts.ionToken) {
+      Cesium.Ion.defaultAccessToken = this.opts.ionToken.trim(); // token typed in settings applies without a reload
       const layer = Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(2), {});
       watchAsync(layer, 'Bing 위성지도 (ion 토큰 확인)');
       layers.add(layer);
