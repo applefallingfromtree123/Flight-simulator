@@ -75,6 +75,8 @@ class App {
       $('errBanner').classList.remove('hidden');
     };
     this.hud = new HUD($('hudLayer'));
+    this.world.deck3d = s.deck3d;
+    $('btnDeck').textContent = s.deck3d ? '3D 조종석' : '2D 패널';
     this.sound.volume = s.volume;
     this.menu.onFly = c => { this.sound.init(); void this.startFlight(c); };
     this.menu.onPreview = apt => { if (!this.flying) this.world.flyOverview(apt.lat, apt.lon); void this.world.elevation.preload(apt.lat, apt.lon, 10000); };
@@ -147,7 +149,7 @@ class App {
     if (this.world.opts.photoreal) await this.world.calibrateGeoid(ac.lat, ac.lon, ac.groundH);
     this.world.updateWeather(w, ac, true);
     this.world.view = def.cockpit === 'fighter' ? 'cockpit' : 'cockpit';
-    this.world.head = { yaw: 0, pitch: def.fdm === 'rotor' ? -8 : -4, zoom: 1 };
+    this.world.head = { yaw: 0, pitch: this.defaultHeadPitch(), zoom: 1 };
     this.av = { ac, fcs, sys, db: this.db, ndRange: def.cat === 'ga' || def.fdm === 'rotor' ? 10 : 20, ndMode: 'ARC', navSource: 'GPS', vor: null, zulu: date };
     this.cockpit = new Cockpit(ac, fcs, sys, this.db, a => this.action(a));
     this.cockpit.build(this.av);
@@ -363,6 +365,10 @@ class App {
     this.cockpit?.refreshMcp();
   }
 
+  private defaultHeadPitch() {
+    const rotor = this.ac?.isRotor;
+    return this.world.deck3d ? (rotor ? -14 : this.ac?.def.cockpit === 'fighter' ? -7 : -11) : rotor ? -8 : -4;
+  }
   private toggleWin(id: string) { $(id).classList.toggle('hidden'); }
 
   setView(v: ViewMode) {
@@ -376,6 +382,7 @@ class App {
   private layout() {
     // shrink the 3D view above the instrument panel in cockpit view (horizon stays centred)
     const panelOn = this.flying && !document.body.classList.contains('nopanel') && this.world.view === 'cockpit';
+    document.body.classList.toggle('c3d', panelOn && this.world.deck3d);
     $('world').style.bottom = panelOn ? 'var(--panelH)' : '0';
     $('panel').classList.toggle('hidden', !this.flying);
   }
@@ -399,6 +406,13 @@ class App {
     $('btnFms').onclick = () => this.action('fms');
     $('btnMenu').onclick = () => this.openMenu();
     $('btnDiag').onclick = () => this.toggleDiag();
+    $('btnDeck').onclick = () => {
+      this.world.deck3d = !this.world.deck3d;
+      this.menu.settings.deck3d = this.world.deck3d; this.menu.saveSettings();
+      $('btnDeck').textContent = this.world.deck3d ? '3D 조종석' : '2D 패널';
+      this.world.head.pitch = this.defaultHeadPitch();
+      if (this.world.view !== 'cockpit') this.setView('cockpit'); else this.layout();
+    };
     $('errBannerOpen').onclick = () => { $('diagwin').classList.remove('hidden'); this.diagT = 0; this.updateDiag(); };
     $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
     $('crashRetry').onclick = () => { if (this.cfg) void this.startFlight(this.cfg); };
@@ -427,7 +441,7 @@ class App {
       if (w.view === 'cockpit' || w.view === 'cockpit-hud') { w.head.yaw = clamp(w.head.yaw + dx * 0.25, -160, 160); w.head.pitch = clamp(w.head.pitch - dy * 0.25, -70, 70); }
       else if (w.view === 'chase') { w.chase.yaw = (w.chase.yaw - dx * 0.4 + 360) % 360; w.chase.pitch = clamp(w.chase.pitch - dy * 0.3, -80, 60); }
     });
-    el.addEventListener('dblclick', () => { this.world.head.yaw = 0; this.world.head.pitch = this.ac?.isRotor ? -8 : -4; this.world.head.zoom = 1; this.world.chase = { yaw: 180, pitch: -8, dist: 1 }; });
+    el.addEventListener('dblclick', () => { this.world.head.yaw = 0; this.world.head.pitch = this.defaultHeadPitch(); this.world.head.zoom = 1; this.world.chase = { yaw: 180, pitch: -8, dist: 1 }; });
     el.addEventListener('wheel', e => {
       if (this.world.view === 'free') return;
       const w = this.world;
@@ -503,6 +517,8 @@ class App {
     const w = this.world;
     const lightsOn = { nav: s.sw.nav && s.elecPowered, beacon: s.sw.beacon && s.elecPowered, strobe: s.sw.strobe && s.elecPowered, landing: (s.sw.landing || s.sw.taxi) && s.elecPowered };
     w.updateAircraft(ac, running ? dtReal * rate : 0, lightsOn, performance.now() / 1000);
+    w.cockpit3d.update(ac, this.av, w.acMatrix, w.view === 'cockpit' && w.deck3d, dtReal,
+      { pitch: c.pitch, roll: c.roll, throttle: ac.engineCmd.map(e => e.throttle), collective: ac.collective });
     w.updateCamera(ac, dtReal);
     const night = w.nightFactor(ac.lat, ac.lon);
     const eyeAlt = w.view === 'cockpit' || w.view === 'cockpit-hud' ? ac.alt : w.scene.camera.positionCartographic.height - w.geoidOffset;
@@ -522,7 +538,7 @@ class App {
     this.av.zulu = Cesium.JulianDate.toDate(w.viewer.clock.currentTime);
     if (this.instT <= 0) {
       this.instT = 1 / 30;
-      if (w.view === 'cockpit' && !document.body.classList.contains('nopanel')) this.cockpit.draw(1 / 30);
+      if (w.view === 'cockpit' && !w.deck3d && !document.body.classList.contains('nopanel')) this.cockpit.draw(1 / 30);
       else if (!$('mapwin').classList.contains('hidden')) this.cockpit.draw(1 / 30);
       this.cockpit.refreshMcp();
       this.cockpit.updatePedestal(1 / 30, c.throttle);

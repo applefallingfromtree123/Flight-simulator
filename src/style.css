@@ -42,6 +42,8 @@ canvas.hud { position: absolute; inset: 0; width: 100%; height: 100%; }
 #panel { position: absolute; left: 0; right: 0; bottom: 0; height: var(--panelH); background: linear-gradient(#20252c, #15191e);
   border-top: 2px solid #33393f; display: flex; flex-direction: column; z-index: 5; }
 body.nopanel #panel { display: none; }
+body.c3d { --panelH: 116px; }
+body.c3d #dus { display: none; }
 #mcp { display: flex; align-items: stretch; gap: 6px; padding: 4px 8px; background: #2a3037; border-bottom: 1px solid #0006; flex-wrap: nowrap; overflow-x: auto; }
 .mcp-grp { display: flex; flex-direction: column; align-items: center; background: #1c2126; border: 1px solid #0008; border-radius: 3px; padding: 2px 6px; min-width: 64px; }
 .mcp-grp label { font-size: 9px; color: #aab4c0; letter-spacing: 1px; }

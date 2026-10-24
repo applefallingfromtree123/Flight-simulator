@@ -20,13 +20,14 @@ export interface FlightConfig {
 export interface Settings {
   imagery: ImagerySource; googleKey: string; ionToken: string; photoreal: boolean;
   quality: 'low' | 'medium' | 'high'; shadows: boolean; volume: number; autoMixture: boolean;
+  deck3d: boolean;
 }
 
 const DEF_CFG: FlightConfig = {
   aircraftId: 'a320neo', livery: {}, dep: 'RKSI', depRwy: '', start: 'runway', arr: 'RJTT', arrRwy: '', route: '',
   cruiseFt: 35000, fuelPct: 60, payloadPct: 70, time: 'now', weather: 'clear', windDir: null, windSpd: null, visibility: null,
 };
-const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'medium', shadows: false, volume: 0.7, autoMixture: true };
+const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'medium', shadows: false, volume: 0.7, autoMixture: true, deck3d: true };
 
 function load<T>(k: string, d: T): T { try { const s = localStorage.getItem(k); return s ? { ...d, ...JSON.parse(s) } : { ...d }; } catch { return { ...d }; } }
 function save(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } }
@@ -323,6 +324,7 @@ export class Menu {
     };
   }
   onSettings: (s: Settings) => void = () => {};
+  saveSettings() { save('sky.settings', this.settings); }
   onDiag: () => void = () => {};
 }
 

@@ -7,9 +7,9 @@ import type { AircraftDef } from '../sim/types.ts';
 import type { Livery } from './liveries.ts';
 import { canvasPng, paintFin, paintFuselage, type FinGeom, type FuselageGeom } from './liveryTex.ts';
 
-type P3 = [number, number, number];
+export type P3 = [number, number, number];
 
-class Part {
+export class Part {
   pos: number[] = []; nrm: number[] = []; idx: number[] = []; uv: number[] = [];
   /** Texture index (textured parts carry TEXCOORD_0). */
   tex?: number;
@@ -96,7 +96,7 @@ function panel(part: Part, root: { le: P3; c: number; t: number }, tip: { le: P3
 }
 
 /** Cylinder / cone along an arbitrary axis. */
-function cyl(part: Part, a: P3, b: P3, r0: number, r1: number, seg = 16, capA = true, capB = true) {
+export function cyl(part: Part, a: P3, b: P3, r0: number, r1: number, seg = 16, capA = true, capB = true) {
   const ax = norm(sub(b, a));
   const ref: P3 = Math.abs(ax[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
   const u = norm(cross(ax, ref)), v = cross(ax, u);
@@ -113,7 +113,7 @@ function cyl(part: Part, a: P3, b: P3, r0: number, r1: number, seg = 16, capA = 
   if (capA && r0 > 0) for (let i = 0; i < seg; i++) part.tri(a, A[i + 1].p, A[i].p);
   if (capB && r1 > 0) for (let i = 0; i < seg; i++) part.tri(b, B[i].p, B[i + 1].p);
 }
-function box(part: Part, c: P3, s: P3) {
+export function box(part: Part, c: P3, s: P3) {
   const [x, y, z] = c, [a, b, h] = [s[0] / 2, s[1] / 2, s[2] / 2];
   const p = (i: number, j: number, k: number): P3 => [x + i * a, y + j * b, z + k * h];
   part.quad(p(1, -1, -1), p(1, 1, -1), p(1, 1, 1), p(1, -1, 1));
@@ -126,7 +126,7 @@ function box(part: Part, c: P3, s: P3) {
 
 export interface ModelNodes { props: { name: string; pos: P3; axis: 'x' | 'z'; dir: number }[]; gear: string[] }
 
-interface NodeDef { name: string; parts: Part[]; translation?: P3 }
+export interface NodeDef { name: string; parts: Part[]; translation?: P3 }
 
 export async function buildAircraftGlb(ac: AircraftDef, aero: AeroModel, liv: Livery): Promise<{ glb: ArrayBuffer; nodes: ModelNodes }> {
   const body = new Part(liv.body, 0.15, 0.38);
@@ -440,7 +440,7 @@ function hexToRgb(hex: string): [number, number, number] {
   return [lin(n >> 16), lin((n >> 8) & 255), lin(n & 255)];
 }
 
-function writeGlb(nodes: NodeDef[], images: Uint8Array[] = []): ArrayBuffer {
+export function writeGlb(nodes: NodeDef[], images: Uint8Array[] = []): ArrayBuffer {
   const bufs: ArrayBuffer[] = [];
   let offset = 0;
   const bufferViews: object[] = [], accessors: object[] = [], meshes: object[] = [], materials: object[] = [];

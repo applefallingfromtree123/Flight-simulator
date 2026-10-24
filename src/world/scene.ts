@@ -8,6 +8,7 @@ import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
+import { Cockpit3D } from './cockpit3d.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
@@ -29,6 +30,10 @@ export class World {
   scene: Cesium.Scene;
   elevation: ElevationService;
   private model: Cesium.Model | null = null;
+  cockpit3d!: Cockpit3D;
+  /** Show the 3D flight deck in cockpit view (else the classic 2D panel). */
+  deck3d = true;
+  readonly acMatrix = new Cesium.Matrix4();
   private modelNodes: ModelNodes | null = null;
   private propAngle: number[] = [];
   private lights: Cesium.PointPrimitiveCollection;
@@ -104,6 +109,7 @@ export class World {
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
+    this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
     if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
   }
@@ -248,6 +254,8 @@ export class World {
     this.propAngle = nodes.props.map(() => 0);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
+    try { await this.cockpit3d.build(ac, this.eyePoint(ac)); }
+    catch (e) { console.error('3D cockpit build failed', e); this.cockpit3d.destroy(); }
   }
 
   private buildAircraftLights(ac: Aircraft) {
@@ -299,6 +307,7 @@ export class World {
   updateAircraft(ac: Aircraft, dt: number, lightsState: { nav: boolean; beacon: boolean; strobe: boolean; landing: boolean }, t: number) {
     if (!this.model) return;
     this.modelMatrixFor(ac, this.model.modelMatrix);
+    Cesium.Matrix4.clone(this.model.modelMatrix, this.acMatrix);
     this.model.show = this.view !== 'cockpit' && this.view !== 'cockpit-hud';
     const nodes = this.modelNodes!;
     if (this.model.ready) {
@@ -489,13 +498,16 @@ export class World {
       const eye = this.bodyToWorld(ac, this.eyePoint(ac));
       const q = qMul(ac.q, qFromEuler(this.head.yaw * DEG, this.head.pitch * DEG, 0));
       const [psi, th, ph] = qToEuler(q);
-      fr.fov = clamp(70 / this.head.zoom, 20, 100) * DEG;
+      const deck = this.view === 'cockpit' && this.deck3d && !!this.cockpit3d.model;
+      fr.fov = clamp((deck ? 80 : 70) / this.head.zoom, 20, 100) * DEG;
+      fr.near = deck ? 0.08 : 0.3;
       // shift the projection centre into the visible area above the instrument panel
       fr.yOffset = this.view === 'cockpit' ? 0 : 0;
       cam.setView({ destination: eye, orientation: { heading: psi, pitch: th, roll: ph } });
       return;
     }
     fr.yOffset = 0;
+    fr.near = 0.3;
     fr.fov = clamp(60 / this.head.zoom, 10, 100) * DEG;
     const target = Cesium.Cartesian3.fromDegrees(ac.lon, ac.lat, ac.alt + this.geoidOffset);
     if (this.view === 'chase') {

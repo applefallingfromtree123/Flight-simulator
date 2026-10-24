@@ -21,6 +21,8 @@ export const FONT = '"B612 Mono", "Consolas", "DejaVu Sans Mono", monospace';
 export class Display {
   cv: HTMLCanvasElement;
   g: CanvasRenderingContext2D;
+  /** Fixed backing size in px (offscreen displays used as 3D-cockpit textures). */
+  fixed: [number, number] | null = null;
   constructor(parent: HTMLElement, public w: number, public h: number, cls = 'du') {
     this.cv = document.createElement('canvas');
     this.cv.className = cls;
@@ -29,9 +31,13 @@ export class Display {
   }
   /** Scale the logical w×h drawing to the element's CSS size (crisp on HiDPI). */
   begin(): CanvasRenderingContext2D {
-    const r = this.cv.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const W = Math.max(1, Math.round(r.width * dpr)), H = Math.max(1, Math.round(r.height * dpr));
+    let W: number, H: number;
+    if (this.fixed) [W, H] = this.fixed;
+    else {
+      const r = this.cv.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      W = Math.max(1, Math.round(r.width * dpr)); H = Math.max(1, Math.round(r.height * dpr));
+    }
     if (this.cv.width !== W || this.cv.height !== H) { this.cv.width = W; this.cv.height = H; }
     const g = this.g;
     const s = Math.min(W / this.w, H / this.h);
