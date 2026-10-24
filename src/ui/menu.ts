@@ -6,6 +6,9 @@ import { runwayEnds, type AirportDB, type Airport } from '../world/airports.ts';
 import { Controls, type AxisBind } from '../input/controls.ts';
 import type { ImagerySource } from '../world/scene.ts';
 import { KEY_HELP } from './help.ts';
+import { liveriesFor, getLivery } from '../world/liveries.ts';
+import { SPECS } from '../sim/specs.ts';
+import { CLASS_LABEL, LICENCES, allowed, classOf, eligibleAircraft, generateJobs, jobTitle, licenceOf, loadCareer, newCareer, nextLicence, payloadPct, saveCareer, type CareerState, type Job } from '../career/career.ts';
 
 export interface FlightConfig {
   aircraftId: string;
@@ -39,33 +42,80 @@ export class Menu {
   onPreview: (apt: Airport) => void = () => {};
   onRoute: (pts: { lat: number; lon: number }[]) => void = () => {};
   onResume: (() => void) | null = null;
-  private tab: 'plan' | 'settings' | 'help' = 'plan';
+  onMapView: (lat: number, lon: number, height: number) => void = () => {};
+  onMapSel: (dep?: Airport, arr?: Airport, focus?: Airport) => void = () => {};
+  onCareerFly: (c: FlightConfig, job: Job) => void = () => {};
+  onCareerAbandon: () => void = () => {};
+  career: CareerState | null = loadCareer();
+  tab: 'plan' | 'aircraft' | 'career' | 'settings' | 'help' = 'plan';
+  private focus: Airport | undefined;
+  private canResume = false;
 
   constructor(private el: HTMLElement, private db: AirportDB, private controls: Controls) {}
 
-  show(canResume: boolean) {
+  show(canResume: boolean, tab?: Menu['tab']) {
     this.el.classList.remove('hidden');
+    if (tab) this.tab = tab;
+    this.canResume = canResume;
     this.render(canResume);
     const a = this.db.get(this.cfg.dep);
     if (a) this.onPreview(a);
+    this.syncMap();
+  }
+  private syncMap() { this.onMapSel(this.db.get(this.cfg.dep), this.db.get(this.cfg.arr), this.focus); }
+  /** Airport clicked on the globe. */
+  pickAirport(apt: Airport) {
+    this.focus = apt;
+    this.renderAptCard();
+    this.syncMap();
+  }
+  private renderAptCard() {
+    const card = this.el.querySelector<HTMLElement>('#aptCard');
+    if (!card) return;
+    const a = this.focus;
+    if (!a) { card.classList.add('hidden'); return; }
+    card.classList.remove('hidden');
+    const rws = a.runways.map(r => `<div class="rw"><b>${r.le.ident}/${r.he.ident}</b> ${Math.round(r.length / 0.3048).toLocaleString()} ft × ${Math.round(r.width / 0.3048)} ft ${r.hard ? '포장' : '비포장'}${r.lighted ? ' · 조명' : ''}</div>`).join('') || '<div class="dim">활주로 정보 없음 (헬리포트 등)</div>';
+    const sizeL = { 3: '대형 공항', 2: '중형 공항', 1: '소형 비행장' }[a.size];
+    card.innerHTML = `<div class="apt-h"><b>${a.icao}</b>${a.iata ? ` <span class="dim">/ ${a.iata}</span>` : ''}<button class="x" id="aptX">✕</button></div>
+      <div class="apt-n">${a.name}</div><div class="dim">${a.city ? a.city + ', ' : ''}${a.country} · ${sizeL} · 표고 ${Math.round(a.elev / 0.3048).toLocaleString()} ft</div>
+      <div class="apt-rw">${rws}</div>
+      <div class="frow"><button id="aptDep" class="primary">출발지로 설정</button><button id="aptArr">도착지로 설정</button></div>`;
+    card.querySelector<HTMLButtonElement>('#aptX')!.onclick = () => { this.focus = undefined; this.renderAptCard(); this.syncMap(); };
+    const set = (k: 'dep' | 'arr') => {
+      this.cfg[k] = a.icao; this.cfg[k === 'dep' ? 'depRwy' : 'arrRwy'] = '';
+      save('sky.cfg', this.cfg);
+      this.focus = undefined;
+      if (this.tab !== 'plan') this.tab = 'plan';
+      this.render(this.canResume);
+      this.syncMap();
+    };
+    card.querySelector<HTMLButtonElement>('#aptDep')!.onclick = () => set('dep');
+    card.querySelector<HTMLButtonElement>('#aptArr')!.onclick = () => set('arr');
   }
   hide() { this.el.classList.add('hidden'); }
   get visible() { return !this.el.classList.contains('hidden'); }
 
   private render(canResume: boolean) {
-    const c = this.cfg;
     this.el.innerHTML = `
       <header>
         <h1>SKY<span>LINE</span> <span class="dim" style="font-size:11px;letter-spacing:1px">FLIGHT SIMULATOR</span></h1>
         <div class="tabs">
           <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}">비행 계획</button>
+          <button data-tab="aircraft" class="${this.tab === 'aircraft' ? 'on' : ''}">기종 · 도색</button>
+          <button data-tab="career" class="${this.tab === 'career' ? 'on' : ''}">커리어</button>
           <button data-tab="settings" class="${this.tab === 'settings' ? 'on' : ''}">설정</button>
           <button data-tab="help" class="${this.tab === 'help' ? 'on' : ''}">조작법</button>
         </div>
         <div><button id="menuDiag" title="렌더링 진단 정보">진단</button> ${canResume ? '<button id="resume">비행 재개 (Esc)</button>' : ''}</div>
       </header>
       <div class="m-col" id="acList"></div>
-      <div class="m-mid"><div class="spec" id="acSpec"></div></div>
+      <div class="m-mid">
+        <div class="map-tools"><button id="mapWorld" title="지구 전체 보기">🌐 세계 지도</button><button id="mapRegion">지역</button><button id="mapDep">출발지</button><button id="mapArr">도착지</button>
+          <span class="dim">지구본에서 공항 점을 눌러 선택 · 드래그 회전 · 휠/핀치 확대</span></div>
+        <div class="apt-card hidden" id="aptCard"></div>
+        <div class="spec" id="acSpec"></div>
+      </div>
       <div class="m-col right" id="rightCol"></div>`;
     this.el.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => b.onclick = () => { this.tab = b.dataset.tab as never; this.render(canResume); });
     this.el.querySelector<HTMLButtonElement>('#menuDiag')!.onclick = () => this.onDiag();
@@ -73,11 +123,22 @@ export class Menu {
     if (res) res.onclick = () => this.onResume?.();
     this.renderAircraftList();
     this.renderSpec();
+    this.renderAptCard();
+    const q = (id: string) => this.el.querySelector<HTMLButtonElement>('#' + id)!;
+    const ctr = () => this.db.get(this.cfg.dep) ?? { lat: 37.5, lon: 127 };
+    q('mapWorld').onclick = () => { const p = ctr(); this.onMapView(p.lat, p.lon, 14_000_000); };
+    q('mapRegion').onclick = () => { const p = ctr(); this.onMapView(p.lat, p.lon, 1_200_000); };
+    q('mapDep').onclick = () => { const a = this.db.get(this.cfg.dep); if (a) { this.onMapView(a.lat, a.lon, 60_000); this.pickAirport(a); } };
+    q('mapArr').onclick = () => { const a = this.db.get(this.cfg.arr); if (a) { this.onMapView(a.lat, a.lon, 60_000); this.pickAirport(a); } };
+    this.renderRight();
+  }
+  private renderRight() {
     const right = this.el.querySelector<HTMLElement>('#rightCol')!;
     if (this.tab === 'plan') this.renderPlan(right);
+    else if (this.tab === 'aircraft') this.renderAircraftInfo(right);
+    else if (this.tab === 'career') this.renderCareer(right);
     else if (this.tab === 'settings') this.renderSettings(right);
     else right.innerHTML = KEY_HELP;
-    void c;
   }
 
   private renderAircraftList() {
@@ -93,7 +154,7 @@ export class Menu {
       if (d.cat === 'glider') this.cfg.start = 'air';
       el.querySelectorAll('.ac-item').forEach(x => x.classList.toggle('sel', x === it));
       this.renderSpec();
-      if (this.tab === 'plan') this.renderPlan(this.el.querySelector('#rightCol')!);
+      if (this.tab === 'plan' || this.tab === 'aircraft') this.renderRight();
     });
     const s = el.querySelector<HTMLInputElement>('#acSearch')!;
     s.oninput = () => {
@@ -105,21 +166,64 @@ export class Menu {
 
   private renderSpec() {
     const a = getAircraft(this.cfg.aircraftId);
-    const eng = a.eng.t === 'none' ? '무동력' : `${a.eng.n} × ${a.eng.t === 'fan' ? `터보팬 ${a.eng.p} kN` : a.eng.t === 'jet' ? `터보제트 ${a.eng.p} kN (AB ${a.eng.ab} kN)` : a.eng.t === 'prop' ? `피스톤 ${Math.round(a.eng.p * 1.341)} hp` : a.eng.t === 'tprop' ? `터보프롭 ${Math.round(a.eng.p * 1.341)} shp` : `터보샤프트 ${Math.round(a.eng.p * 1.341)} shp`}`;
-    const law = a.fbw === 'airbus' ? 'FBW (Normal Law, 사이드스틱)' : a.fbw === 'boeing' ? 'FBW (C*U, 요크)' : a.fbw === 'fighter' ? 'FBW (G-command)' : a.fdm === 'rotor' ? '기계식 + SAS' : '기계식 (재래식)';
-    const cockpit = { airliner: '글래스 칵핏 (PFD/ND/EICAS)', g1000: 'G1000/글래스 GA', steam: '아날로그 6-pack', fighter: 'HUD + MFD', heli: '헬기 글래스' }[a.cockpit];
+    const liv = getLivery(a, this.cfg.livery?.[a.id]);
+    const x = SPECS[a.id];
     this.el.querySelector<HTMLElement>('#acSpec')!.innerHTML = `
-      <h2>${a.name}</h2><div class="mfr">${a.mfr} · ${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao}</div>
+      <div class="spec-row"><div><h2>${a.name}</h2><div class="mfr">${a.mfr} · ${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao} · 도색: ${liv.name} (${liv.reg})</div></div>
+      <button id="specMore">상세 제원 · 도색 선택 →</button></div>
       <div class="spec-grid">
         <div><span>전장 / 전폭</span>${a.L.toFixed(1)} / ${a.fdm === 'rotor' ? a.rotor!.D + ' (로터)' : a.b.toFixed(1)} m</div>
         <div><span>MTOW</span>${a.m.mtow.toLocaleString()} kg</div>
-        <div><span>엔진</span>${eng}</div>
-        <div><span>조종계통</span>${law}</div>
-        <div><span>순항</span>${a.v.cruise} KTAS @ ${a.fdm === 'rotor' ? '—' : 'FL' + Math.round(a.v.cruiseFt / 100)}</div>
-        <div><span>VMO / MMO</span>${a.v.vmo} kt / M${a.v.mmo}</div>
-        <div><span>${a.fdm === 'rotor' ? '실용상승한도' : 'VR / VREF'}</span>${a.fdm === 'rotor' ? a.v.ceil + ' ft' : a.v.vr + ' / ' + a.v.vref + ' kt'}</div>
-        <div><span>계기</span>${cockpit}</div>
-      </div>${a.note ? `<p class="note">${a.note}</p>` : ''}`;
+        <div><span>순항</span>${a.v.cruise} KTAS${a.fdm === 'rotor' ? '' : ' @ FL' + Math.round(a.v.cruiseFt / 100)}</div>
+        <div><span>항속거리</span>${x && x.rangeKm ? x.rangeKm.toLocaleString() + ' km' : '—'}</div>
+      </div>`;
+    this.el.querySelector<HTMLButtonElement>('#specMore')!.onclick = () => { this.tab = 'aircraft'; this.render(this.canResume); };
+  }
+
+  private renderAircraftInfo(el: HTMLElement) {
+    const a = getAircraft(this.cfg.aircraftId);
+    const x = SPECS[a.id];
+    const eng = a.eng.t === 'none' ? '무동력' : `${a.eng.n} × ${a.eng.t === 'fan' ? `터보팬 ${a.eng.p} kN` : a.eng.t === 'jet' ? `터보제트 ${a.eng.p} kN (A/B ${a.eng.ab} kN)` : a.eng.t === 'prop' ? `피스톤 ${Math.round(a.eng.p * 1.341)} hp` : a.eng.t === 'tprop' ? `터보프롭 ${Math.round(a.eng.p * 1.341)} shp` : `터보샤프트 ${Math.round(a.eng.p * 1.341)} shp`}`;
+    const law = a.fbw === 'airbus' ? 'FBW · Normal Law · 사이드스틱' : a.fbw === 'boeing' ? 'FBW · C*U · 요크' : a.fbw === 'fighter' ? 'FBW · G-command' : a.fdm === 'rotor' ? '기계식 + SAS' : '기계식 (재래식)';
+    const cockpit = { airliner: '글래스 칵핏 (PFD/ND/EICAS)', g1000: 'G1000 글래스 칵핏', steam: '아날로그 6-pack', fighter: 'HUD + MFD', heli: '헬기 글래스 칵핏' }[a.cockpit];
+    const AR = a.b * a.b / a.S;
+    const thrust = a.eng.t === 'fan' || a.eng.t === 'jet' ? `${((a.eng.n * (a.eng.ab ?? a.eng.p) * 1000) / (a.m.mtow * 9.81)).toFixed(2)} (추력/중량)` : a.eng.t === 'none' ? '—' : `${((a.eng.n * a.eng.p) / a.m.mtow).toFixed(3)} kW/kg (출력/중량)`;
+    const row = (k: string, v: string) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+    const livs = liveriesFor(a);
+    const cur = getLivery(a, this.cfg.livery?.[a.id]).id;
+    el.innerHTML = `
+      <div class="sec"><h3>${a.mfr} ${a.name}</h3>
+        <p class="note">${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao}${x ? ` · 초도 비행 ${x.first}년` : ''}${a.seats ? ` · 좌석 ${a.seats}석` : ''}${x?.crew ? ` · 운항 승무원 ${x.crew}명` : ''}</p>
+        ${a.note ? `<p class="note">${a.note}</p>` : ''}
+      </div>
+      <div class="sec"><h3>도색 (리버리)</h3><div class="liv-list">
+        ${livs.map(l => `<button class="liv ${l.id === cur ? 'sel' : ''}" data-liv="${l.id}">
+          <span class="sw"><i style="background:${l.body}"></i><i style="background:${(l.bands ?? [])[0]?.c ?? l.body}"></i><i style="background:${l.tail.bg}"></i><i style="background:${l.engine}"></i></span>
+          <span class="ln">${l.name}</span><span class="dim">${l.reg}</span></button>`).join('')}
+      </div><p class="note">도색은 실제 운항사의 색 배치·타이틀·꼬리날개 마크를 단순화해 재현한 것입니다.</p></div>
+      <div class="sec"><h3>치수</h3><table class="spec-t">
+        ${row('전장', a.L.toFixed(2) + ' m')}${row(a.fdm === 'rotor' ? '로터 직경' : '전폭', (a.fdm === 'rotor' ? a.rotor!.D : a.b).toFixed(2) + ' m')}${row('전고', a.H.toFixed(2) + ' m')}
+        ${a.fdm === 'rotor' ? row('로터 블레이드', `${a.rotor!.blades}개 · 꼬리 ${a.rotor!.tail}`) : row('날개 면적', a.S.toFixed(1) + ' m²') + row('가로세로비', AR.toFixed(1)) + row('후퇴각 (1/4 시위)', a.sweep + '°')}
+        ${row('동체 직경', a.dia.toFixed(2) + ' m')}</table></div>
+      <div class="sec"><h3>중량</h3><table class="spec-t">
+        ${row('자체 중량', a.m.e.toLocaleString() + ' kg')}${row('최대 이륙 중량 (MTOW)', a.m.mtow.toLocaleString() + ' kg')}${row('최대 착륙 중량 (MLW)', a.m.mlw.toLocaleString() + ' kg')}
+        ${row('연료 용량', a.m.fuel.toLocaleString() + ' kg')}${row('최대 탑재량', a.m.pay.toLocaleString() + ' kg')}${a.fdm === 'rotor' ? '' : row('익면 하중 (MTOW)', Math.round(a.m.mtow / a.S) + ' kg/m²')}</table></div>
+      <div class="sec"><h3>동력</h3><table class="spec-t">
+        ${row('엔진', eng)}${x ? row('엔진 모델', x.engine) : ''}${row('추력/출력 대 중량', thrust)}${a.eng.bpr ? row('바이패스비', String(a.eng.bpr)) : ''}${a.eng.propD ? row('프로펠러', `${a.eng.propD} m · ${a.eng.blades}엽`) : ''}</table></div>
+      <div class="sec"><h3>성능</h3><table class="spec-t">
+        ${row('순항 속도', `${a.v.cruise} KTAS (${Math.round(a.v.cruise * 1.852)} km/h)`)}${a.fdm === 'rotor' ? '' : row('순항 고도', `FL${Math.round(a.v.cruiseFt / 100)}`)}
+        ${row('실용 상승 한도', a.v.ceil.toLocaleString() + ' ft')}${x && x.rangeKm ? row('항속 거리', `${x.rangeKm.toLocaleString()} km (${Math.round(x.rangeKm / 1.852).toLocaleString()} NM)`) : ''}
+        ${row('VMO / MMO', `${a.v.vmo} kt / M${a.v.mmo}`)}${a.fdm === 'rotor' ? '' : row('실속 속도 VS0 / VS1', `${a.v.vs0} / ${a.v.vs1} kt`) + row('VR / VREF', `${a.v.vr} / ${a.v.vref} kt`)}
+        ${row('VLE / VFE', `${a.v.vle} / ${a.v.vfe} kt`)}</table></div>
+      <div class="sec"><h3>시스템</h3><table class="spec-t">
+        ${row('조종 계통', law)}${row('계기', cockpit)}${row('착륙장치', `${{ tri: '전륜식', tail: '후륜식', skid: '스키드', float: '플로트' }[a.gear.t]}${a.gear.retract ? ' · 접이식' : ' · 고정식'}`)}
+        ${row('플랩', a.flaps === 'none' ? '—' : a.flaps)}${row('스포일러 / 역추진', `${a.spoilers ? '있음' : '없음'} / ${a.reversers ? '있음' : '없음'}`)}${row('APU', a.apu ? '있음' : '없음')}</table></div>`;
+    el.querySelectorAll<HTMLButtonElement>('[data-liv]').forEach(b => b.onclick = () => {
+      this.cfg.livery = { ...(this.cfg.livery ?? {}), [a.id]: b.dataset.liv! };
+      save('sky.cfg', this.cfg);
+      el.querySelectorAll('.liv').forEach(x => x.classList.toggle('sel', x === b));
+      this.renderSpec();
+    });
   }
 
   private aptField(id: string, label: string, value: string) {
@@ -217,6 +321,7 @@ export class Menu {
         fillRwy($(rwyId), c[id], ''); c[rwyId] = ($(rwyId) as HTMLSelectElement).value;
         info(id, c[id]); updRoute();
         if (apt && id === 'dep') this.onPreview(apt);
+        this.syncMap();
       };
       inp.onchange = commit;
       inp.onblur = () => setTimeout(() => list.classList.add('hidden'), 150);
@@ -242,6 +347,94 @@ export class Menu {
       save('sky.cfg', c);
       this.onFly({ ...c });
     };
+  }
+
+  private renderCareer(el: HTMLElement) {
+    const c = this.career;
+    if (!c) {
+      el.innerHTML = `
+        <div class="sec"><h3>커리어 시작</h3>
+          <p class="note">학생 조종사로 시작해 소형기 의뢰로 경험치(XP)와 돈을 모으면 자가용 → 사업용 → 운송용 면장과 대형기 기장 자격이 열립니다.
+          의뢰는 현재 위치한 실제 공항 주변의 실제 공항들로 생성되며, 착륙 품질·과속·사고 여부로 보수와 평판이 정해집니다.</p>
+          <div class="field"><label>조종사 이름</label><input id="cName" value="" placeholder="예: 김민준"></div>
+          <div class="field"><label>홈 공항 (ICAO)</label><input id="cHome" value="${this.cfg.dep}"></div>
+          <button id="cStart" class="primary" style="width:100%">커리어 시작</button>
+        </div>`;
+      el.querySelector<HTMLButtonElement>('#cStart')!.onclick = () => {
+        const name = el.querySelector<HTMLInputElement>('#cName')!.value.trim() || '조종사';
+        const home = this.db.get(el.querySelector<HTMLInputElement>('#cHome')!.value.trim());
+        if (!home) { alert('홈 공항을 찾을 수 없습니다.'); return; }
+        this.career = newCareer(name, home.icao);
+        saveCareer(this.career);
+        this.renderCareer(el);
+      };
+      return;
+    }
+    const lic = licenceOf(c), next = nextLicence(c);
+    const here = this.db.get(c.location);
+    if (c.jobsFor !== c.location || !c.jobs.length) { c.jobs = generateJobs(c, this.db); c.jobsFor = c.location; saveCareer(c); }
+    const pct = next ? Math.round(((c.xp - lic.xp) / (next.xp - lic.xp)) * 100) : 100;
+    const jobCard = (j: Job, active = false) => {
+      const to = this.db.get(j.to);
+      const acs = eligibleAircraft(c, j.cls);
+      const pick = acs.find(a => a.id === this.cfg.aircraftId) ?? acs[0];
+      return `<div class="job ${active ? 'active' : ''}" data-job="${j.id}">
+        <div class="job-h"><b>${j.from} → ${j.to}</b><span class="pay">$${j.pay.toLocaleString()}</span></div>
+        <div>${jobTitle(j)} · <span class="dim">${j.client}</span></div>
+        <div class="dim">${to ? to.name + ' · ' + (to.city || to.country) : ''} · ${j.nm} NM · ${CLASS_LABEL[j.cls]} · +${j.xp} XP</div>
+        ${active ? `<div class="frow"><button data-resume="1" class="primary">이 임무로 비행</button><button data-abandon="1">임무 포기</button></div>`
+          : `<div class="frow"><select data-ac="${j.id}">${acs.map(a => `<option value="${a.id}" ${a === pick ? 'selected' : ''}>${a.mfr} ${a.name}</option>`).join('')}</select>
+          <button data-accept="${j.id}" class="primary">수락 · 비행</button></div>`}
+      </div>`;
+    };
+    el.innerHTML = `
+      <div class="sec pilot">
+        <div class="job-h"><b>${c.name}</b><span class="dim">${lic.name}</span></div>
+        <div class="xpbar"><i style="width:${pct}%"></i></div>
+        <div class="dim">${c.xp.toLocaleString()} XP${next ? ` · 다음 면장 ${next.name}까지 ${(next.xp - c.xp).toLocaleString()} XP` : ' · 최고 등급'}</div>
+        <div class="spec-grid">
+          <div><span>잔고</span>$${c.money.toLocaleString()}</div><div><span>비행시간</span>${c.hours.toFixed(1)} h</div>
+          <div><span>비행 횟수</span>${c.flights}</div><div><span>평판</span>${c.rep}/100</div>
+        </div>
+        <div class="dim">현재 위치: <b>${c.location}</b> ${here ? here.name : ''} · 조종 가능: ${lic.classes.map(k => CLASS_LABEL[k]).join(', ')}</div>
+      </div>
+      ${c.active ? `<div class="sec"><h3>진행 중인 임무</h3>${jobCard(c.active, true)}</div>` : ''}
+      <div class="sec"><h3>의뢰 게시판 — ${c.location}</h3>
+        ${c.jobs.length ? c.jobs.map(j => jobCard(j)).join('') : '<p class="note">이 공항 주변에 맞는 의뢰가 없습니다. 다른 공항으로 이동(자유 비행 후 착륙)하거나 홈 공항을 바꿔보세요.</p>'}
+        <button id="cRefresh" style="width:100%">새 의뢰 받기</button>
+      </div>
+      <div class="sec"><h3>면장</h3>${LICENCES.map(l => `<div class="lic ${c.xp >= l.xp ? 'got' : ''}">${c.xp >= l.xp ? '✔' : '○'} ${l.name} <span class="dim">${l.xp.toLocaleString()} XP · ${l.classes.map(k => CLASS_LABEL[k]).join(', ')}</span></div>`).join('')}</div>
+      <div class="sec"><h3>로그북</h3>${c.log.length ? `<table class="spec-t log"><tr><td>날짜</td><td>구간</td><td>기종</td><td>시간</td><td>착륙</td><td>보수</td></tr>
+        ${c.log.slice(0, 15).map(e => `<tr class="${e.result}"><td>${new Date(e.t).toLocaleDateString()}</td><td>${e.from}→${e.to}</td><td>${e.ac}</td><td>${e.min}분</td><td>${e.fpm === null ? '—' : e.fpm + ' fpm'}</td><td>${e.pay >= 0 ? '' : '−'}$${Math.abs(e.pay).toLocaleString()}</td></tr>`).join('')}</table>` : '<p class="note">아직 기록이 없습니다.</p>'}
+      </div>
+      <button id="cReset" style="width:100%;opacity:.7">커리어 초기화</button>`;
+    el.querySelector<HTMLButtonElement>('#cRefresh')!.onclick = () => { c.jobs = generateJobs(c, this.db, Date.now() + 1); c.jobsFor = c.location; saveCareer(c); this.renderCareer(el); };
+    el.querySelector<HTMLButtonElement>('#cReset')!.onclick = () => { if (confirm('커리어 기록을 모두 지울까요?')) { this.career = null; saveCareer(null); this.renderCareer(el); } };
+    el.querySelectorAll<HTMLButtonElement>('[data-accept]').forEach(b => b.onclick = () => {
+      const job = c.jobs.find(j => j.id === b.dataset.accept)!;
+      const acId = el.querySelector<HTMLSelectElement>(`[data-ac="${job.id}"]`)!.value;
+      c.active = job; saveCareer(c);
+      this.flyJob(job, acId);
+    });
+    el.querySelector<HTMLButtonElement>('[data-resume]')?.addEventListener('click', () => {
+      const job = c.active!;
+      const acs = eligibleAircraft(c, job.cls);
+      this.flyJob(job, (acs.find(a => a.id === this.cfg.aircraftId) ?? acs[0]).id);
+    });
+    el.querySelector<HTMLButtonElement>('[data-abandon]')?.addEventListener('click', () => { if (confirm('임무를 포기할까요? (평판 −4)')) { this.onCareerAbandon(); this.renderCareer(el); } });
+    void allowed; void classOf;
+  }
+  /** Set up the flight plan for a career job and launch it. */
+  private flyJob(job: Job, acId: string) {
+    const a = getAircraft(acId);
+    const x = SPECS[a.id];
+    const endurH = x && x.rangeKm ? x.rangeKm / 1.852 / Math.max(60, a.v.cruise) : rangeHours(a);
+    const needH = job.nm * 1.15 / Math.max(60, a.v.cruise * 0.9) + 0.75;
+    Object.assign(this.cfg, { aircraftId: a.id, dep: job.from, arr: job.to, depRwy: '', arrRwy: '', route: '', start: 'runway',
+      payloadPct: payloadPct(job, a), fuelPct: Math.round(Math.max(20, Math.min(100, (needH / endurH) * 100))),
+      cruiseFt: Math.min(a.v.cruiseFt, job.nm < 60 ? 4500 : job.nm < 200 ? Math.min(a.v.cruiseFt, 12000) : a.v.cruiseFt) });
+    save('sky.cfg', this.cfg);
+    this.onCareerFly({ ...this.cfg }, job);
   }
 
   private renderSettings(el: HTMLElement) {

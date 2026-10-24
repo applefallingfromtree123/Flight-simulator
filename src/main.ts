@@ -17,6 +17,8 @@ import { Cockpit } from './ui/cockpit.ts';
 import { HUD } from './avionics/hud.ts';
 import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
+import { AirportMap } from './world/worldMap.ts';
+import { finishJob, saveCareer, type Job } from './career/career.ts';
 
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = CESIUM_BASE_URL;
 
@@ -54,6 +56,10 @@ class App {
   private fps = 60;
   private wasAp = false;
   private dragging: { x: number; y: number; btn: number } | null = null;
+  map!: AirportMap;
+  // career flight tracking
+  careerJob: Job | null = null;
+  private job = { t: 0, airborne: false, overspeed: 0, fpm: null as number | null, stillT: 0, done: false };
 
   async boot() {
     loading('공항 · 항법 데이터베이스 로딩 중…');
@@ -78,8 +84,21 @@ class App {
     this.world.deck3d = s.deck3d;
     $('btnDeck').textContent = s.deck3d ? '3D 조종석' : '2D 패널';
     this.sound.volume = s.volume;
-    this.menu.onFly = c => { this.sound.init(); void this.startFlight(c); };
-    this.menu.onPreview = apt => { if (!this.flying) this.world.flyOverview(apt.lat, apt.lon); void this.world.elevation.preload(apt.lat, apt.lon, 10000); };
+    this.menu.onFly = c => { this.sound.init(); this.careerJob = null; void this.startFlight(c); };
+    this.map = new AirportMap(this.world.scene, this.db);
+    this.map.onPick = apt => { if (this.menu.visible) this.menu.pickAirport(apt); };
+    this.menu.onMapView = (lat, lon, h) => { if (!this.flying) this.map.view(lat, lon, h); };
+    this.menu.onMapSel = (dep, arr, focus) => this.map.setSelection(dep, arr, focus);
+    this.menu.onPreview = apt => {
+      if (!this.flying) { this.world.flyOverview(apt.lat, apt.lon); this.map.view(apt.lat, apt.lon, 900_000, 2); }
+      void this.world.elevation.preload(apt.lat, apt.lon, 10000);
+    };
+    this.menu.onCareerFly = (c, job) => { this.sound.init(); this.careerJob = job; void this.startFlight(c); };
+    this.menu.onCareerAbandon = () => {
+      const car = this.menu.career;
+      if (car?.active) { finishJob(car, car.active, '—', { landedAt: null, crashed: false, fpm: null, minutes: 0, overspeed: 0, aborted: true }); car.location = car.active?.from ?? car.location; saveCareer(car); }
+      this.careerJob = null;
+    };
     this.menu.onRoute = pts => this.world.showRoute(pts);
     this.menu.onResume = () => this.resume();
     this.menu.onDiag = () => this.toggleDiag();
@@ -99,6 +118,7 @@ class App {
     loading(null);
     (window as unknown as { __booted: boolean }).__booted = true;
     this.menu.show(false);
+    this.map.setActive(true);
     requestAnimationFrame(t => this.frame(t));
   }
 
@@ -106,6 +126,8 @@ class App {
   async startFlight(cfg: FlightConfig) {
     this.cfg = cfg;
     this.menu.hide();
+    this.map.setActive(false);
+    this.job = { t: 0, airborne: false, overspeed: 0, fpm: null, stillT: 0, done: false };
     loading('비행 준비 중… 지형 데이터 스트리밍');
     this.flying = false;
     const def = getAircraft(cfg.aircraftId);
@@ -175,6 +197,7 @@ class App {
     this.layout();
     this.lastTouch = ac.touchdownEvent;
     toast(`${dep.icao} ${cfg.start === 'final' && arr ? '→ ' + arr.icao + ' 최종접근' : ''} · ${def.name} · QNH ${Math.round(w.qnh)}`);
+    if (this.careerJob) toast(`커리어 임무: ${this.careerJob.from} → ${this.careerJob.to} · 도착 후 정지하고 파킹 브레이크(또는 엔진 정지)하면 임무 완료`);
     if (cfg.start === 'cold') toast('Cold & Dark: 오버헤드(O)에서 시동 절차를 수행하거나 Ctrl+E로 자동 시동');
   }
 
@@ -387,6 +410,17 @@ class App {
     $('panel').classList.toggle('hidden', !this.flying);
   }
 
+  /** Leave the flight and return to the main menu (world map). */
+  endFlight(tab?: 'career') {
+    this.flying = false;
+    this.touch.show(false, false);
+    document.body.classList.remove('flying', 'c3d');
+    $('topbar').classList.add('hidden');
+    this.world.cockpit3d.destroy();
+    this.layout();
+    this.map.setActive(true);
+    this.menu.show(false, tab);
+  }
   openMenu() {
     this.paused = true;
     this.touch.show(false, false);
@@ -416,7 +450,9 @@ class App {
     $('errBannerOpen').onclick = () => { $('diagwin').classList.remove('hidden'); this.diagT = 0; this.updateDiag(); };
     $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
     $('crashRetry').onclick = () => { if (this.cfg) void this.startFlight(this.cfg); };
-    $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.flying = false; this.touch.show(false, false); document.body.classList.remove('flying'); $('topbar').classList.add('hidden'); this.layout(); this.menu.show(false); };
+    $('resultCareer').onclick = () => { $('resultwin').classList.add('hidden'); $('crash').classList.add('hidden'); this.endFlight('career'); };
+    $('resultStay').onclick = () => { $('resultwin').classList.add('hidden'); this.paused = false; };
+    $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.endFlight(); };
     document.querySelectorAll<HTMLElement>('.window').forEach(w => {
       w.querySelector<HTMLButtonElement>('.close')!.onclick = () => w.classList.add('hidden');
       const head = w.querySelector<HTMLElement>('.win-head')!;
@@ -503,8 +539,11 @@ class App {
           toast(`TOUCHDOWN ${Math.round(fpm)} fpm · ${Math.round(ac.ias / KT)} kt · ${grade}`);
         }
         s.events.push('touchdown');
+        this.job.fpm = fpm;
       }
+      if (this.careerJob) this.trackJob(dtReal * rate);
       if (ac.crash) {
+        if (this.careerJob && !this.job.done) this.completeJob(true);
         $('crashReason').textContent = ac.crash.reason;
         $('crash').classList.remove('hidden');
         s.events.push('say:crash');
@@ -558,6 +597,35 @@ class App {
     this.sound.update(ac, w.view === 'cockpit' || w.view === 'cockpit-hud', !running, events);
     w.renderFrame();
     this.updateDiag();
+  }
+
+  // ───────────────────────── career ─────────────────────────
+  private trackJob(dt: number) {
+    const ac = this.ac!, j = this.job;
+    if (j.done) return;
+    j.t += dt;
+    if (!ac.onGround && ac.agl > 30) j.airborne = true;
+    if (ac.ias / KT > ac.def.v.vmo + 5) j.overspeed += dt;
+    const stopped = ac.onGround && ac.gs < 1.5 * KT && (ac.parkingBrake || ac.engines.every(e => !e.running));
+    j.stillT = stopped ? j.stillT + dt : 0;
+    if (j.airborne && j.stillT > 2) this.completeJob(false);
+  }
+  private completeJob(crashed: boolean) {
+    const car = this.menu.career, job = this.careerJob, ac = this.ac!;
+    this.job.done = true;
+    if (!car || !job) return;
+    const near = this.db.nearest(ac, 1, 5000)[0];
+    const r = finishJob(car, job, `${ac.def.mfr} ${ac.def.name}`, { landedAt: crashed ? null : near?.apt.icao ?? null, crashed, fpm: this.job.fpm, minutes: this.job.t / 60, overspeed: this.job.overspeed });
+    if (crashed) car.location = job.from;
+    saveCareer(car);
+    this.careerJob = null;
+    const title = r.result === 'ok' ? '임무 완료' : r.result === 'diverted' ? '회항 — 임무 부분 완료' : r.result === 'crash' ? '임무 실패' : '임무 종료';
+    $('resultTitle').textContent = title;
+    $('resultBody').innerHTML = `<div class="res-pay ${r.pay >= 0 ? 'ok' : 'bad'}">${r.pay >= 0 ? '+' : '−'}$${Math.abs(r.pay).toLocaleString()}</div>
+      <table class="spec-t">${r.lines.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
+      <div class="dim" style="margin-top:6px">잔고 $${car.money.toLocaleString()} · ${car.xp.toLocaleString()} XP · 위치 ${car.location}</div>`;
+    $('resultwin').classList.remove('hidden');
+    if (!crashed) this.paused = true;
   }
 
   // ───────────────────────── diagnostics panel ─────────────────────────
