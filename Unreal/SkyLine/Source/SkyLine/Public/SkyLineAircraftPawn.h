@@ -147,6 +147,7 @@ private:
 	bool bSimPaused = false;
 	bool bWaitingForTerrain = false;
 	double WaitStarted = 0;
+	double SpawnLat = 0, SpawnLon = 0;
 	double GeoidOffset = 0;      // ellipsoid height - MSL near the departure airport (m)
 	double GroundTraceTimer = 0;
 	double LastRebaseLat = 1000, LastRebaseLon = 1000;
@@ -169,6 +170,7 @@ private:
 	bool TraceGround(double Lat, double Lon, double& OutEllipsoidHeight, bool& bOutWater) const;
 	bool IsOnRunway(double Lat, double Lon) const;
 	void PositionAtStart();
+	void StartAirborneCustom();
 	void PollInput(float Dt);
 	void UpdateCamera(float Dt);
 	void CreatePartComponents();

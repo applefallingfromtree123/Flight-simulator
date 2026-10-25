@@ -1,7 +1,15 @@
 # SkyLine Flight Simulator (Unreal Engine 5)
 
-실제 지구 위에서, 실제 기체 모델과 **실제 항공사 도색**으로, 직접 만든 6자유도 비행역학 엔진을 타고 나는 PC용 비행 시뮬레이터입니다.
-Unreal Engine 5(PC) 버전입니다. **아이패드에서는 실행되지 않으므로**, 기존 웹 버전(`src/`, https://applefallingfromtree123.github.io/Flight-simulator/)도 그대로 유지합니다.
+실제 지구 위에서, 실제 기체 모델과 **실제 항공사 도색**으로, 직접 만든 6자유도 비행역학 엔진을 타고 나는 비행 시뮬레이터입니다.
+**Unreal Engine 5 전용** — Windows/Mac PC와 **아이패드(iPadOS 16+)** 에서 실행됩니다. (예전 웹 버전은 삭제되어 GitHub Pages 주소는 더 이상 동작하지 않습니다.)
+
+## 게임 모드 (MSFS 2024 스타일)
+
+| 모드 | 내용 |
+|---|---|
+| **자유 비행** | 기종·도색·출발/도착 공항·시작 위치(활주로 / 콜드 앤 다크 / 최종 접근 / 순항)·날씨·시간을 골라 자유롭게 |
+| **커리어** | 학생 조종사(SPL) → PPL → CPL → ATPL → 대형기 기장. 현재 공항에서 실제 공항으로 가는 의뢰(여객·화물·페리·관광·응급)를 받아 비행하고, 도착 후 정지 + 파킹브레이크로 완료. 접지율·G·과속·테일스트라이크로 보수 정산, 경험치로 승급하면 더 큰 기종이 열립니다. 돈·평판·비행시간·로그북은 자동 저장 |
+| **액티비티** | **착륙 챌린지** 10종 (김포, 제주 측풍, 세인트마틴 마호 비치, 인스브루크, 마데이라, 지브롤터, 파로, 루클라, 사바, 샌프란시스코 야간) — 접지율·중심선·접지 지점·속도·뱅크로 1000점 채점, S~D 등급 · **디스커버리 비행** 10종 (서울 한강, 뉴욕 헬기, 그랜드 캐니언, 후지산, 마터호른, 두바이, 리우, 하와이, 파리, 시드니) |
 
 | 계층 | 구현 |
 |---|---|
@@ -37,7 +45,7 @@ FlightGear 저장소에서 기체를 내려받아(`.fgcache/`) `Unreal/SkyLine/A
 `<기체>.glb` + `Liveries/*.png` + `manifest.json` 을 만듭니다. 변환 결과물은 용량이 커서 git에 올리지 않습니다.
 변환할 기체 목록·기본 도색은 `tools/fgconv/catalog.json` 에서 바꿀 수 있습니다.
 
-## 3. 실행
+## 3. 실행 (PC)
 
 1. `Unreal/SkyLine/SkyLine.uproject` 더블클릭 → "모듈을 빌드하시겠습니까?" → **예**
    (또는 우클릭 → Generate Visual Studio project files → `SkyLine.sln` 에서 `SkyLineEditor` 빌드)
@@ -47,7 +55,33 @@ FlightGear 저장소에서 기체를 내려받아(`.fgcache/`) `Unreal/SkyLine/A
 
 > 에디터 Play 중에는 Esc가 플레이를 종료하므로 메뉴는 **M** 키를 쓰세요.
 
-## 조작
+## 4. 아이패드에서 실행하기
+
+Apple 정책상 iOS/iPadOS 앱은 **Mac + Xcode** 로만 빌드·설치할 수 있습니다 (Windows 불가).
+
+1. Mac에 Unreal Engine 5.5, **Xcode 15+**, Cesium for Unreal 설치. Xcode → Settings → Accounts 에 Apple ID 추가 (무료 계정도 7일짜리 개인 설치 가능, 유료 개발자 계정이면 1년).
+2. 아이패드용으로 가볍게 기체 변환 (텍스처 1024px, 도색 수 제한, 아이패드에 적합한 22개 기체만):
+   ```bash
+   npm run aircraft:ipad
+   ```
+3. 에디터에서 Project Settings → Platforms → iOS → **Bundle Identifier** 를 본인 것으로 (예: `com.<이름>.skyline`), Signing에서 Team 선택.
+4. 아이패드를 USB로 연결 → 에디터 상단 **Platforms → iOS → Package Project** (또는 Launch 버튼으로 바로 설치).
+5. 아이패드 설정 → 일반 → VPN 및 기기 관리 → 개발자 앱 신뢰.
+
+아이패드에서는 자동으로 **터치 조종**이 켜지고 그래픽 품질이 모바일용으로 낮아집니다 (Lumen·가상 섀도·볼류메트릭 구름 끄기, 3D 타일 해상도 조절 — `Config/DefaultDeviceProfiles.ini`).
+권장: M1 이상 아이패드 Pro/Air. PC에서 **F9** 로 터치 UI를 미리 볼 수 있습니다.
+
+### 터치 조작
+
+| 화면 | 동작 |
+|---|---|
+| 오른쪽 아래 원 (요크) | 드래그 = 피치/롤, 놓으면 중앙 복귀 |
+| 왼쪽 세로 막대 | 스로틀 |
+| 아래 가로 막대 | 러더 / 지상 조향 |
+| 버튼 | 기어 · 플랩 ↑↓ · 스포일러 · 브레이크(누른 채) · 파킹 · AP · A/THR · APP · 시점 · 엔진 · 메뉴 |
+| 빈 화면 드래그 / 두 손가락 | 둘러보기 / 줌 · MCP 숫자 탭 |
+
+## 조작 (키보드)
 
 | 키 | 동작 |
 |---|---|
@@ -65,7 +99,7 @@ FlightGear 저장소에서 기체를 내려받아(`.fgcache/`) `Unreal/SkyLine/A
 | Z · T · L · Insert | AP · A/THR · APP(ILS 접근) · TOGA |
 | V · C | 시점 전환 · 조종석 |
 | 마우스 오른쪽 드래그 / 휠 | 둘러보기 / 줌 (MCP 숫자 위에서 휠 = 값 조절) |
-| Tab · Pause · M · I · F10 | 시뮬 속도 · 일시정지 · 메뉴 · 계기 표시 · 도움말 |
+| Tab · Pause · M · I · F9 · F10 | 시뮬 속도 · 일시정지 · 메뉴 · 계기 표시 · 터치 UI · 도움말 |
 
 게임패드(XInput): 왼스틱 조종, 오른스틱 러더/스로틀, 트리거 브레이크, Y 기어, 십자키 플랩, B AP, X 파킹브레이크.
 
@@ -82,7 +116,7 @@ Unreal/SkyLine/
   SkyLine.uproject
   Source/SkyLineSim/     비행역학·비행제어 (엔진 독립 C++17, tests/sim 에서 헤드리스 테스트)
   Source/SkyLine/        Unreal 게임 코드: 기체 로더(GLB→StaticMesh, 도색 교체), 폰, 게임모드(Cesium 지구·태양·구름),
-                         메뉴(Slate), 계기(HUD)
+                         메뉴(Slate: 자유비행/커리어/액티비티), 계기(HUD), 터치 조종, 커리어 저장, 미션 채점
   Content/Python/        에디터 시작 시 머티리얼 자동 생성
   Data/                  공항·항법시설 DB
   Aircraft/              (변환 결과, git 제외)

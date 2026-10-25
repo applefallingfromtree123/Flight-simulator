@@ -165,16 +165,20 @@ void ASkyLineAircraftPawn::BeginFlight(const FSkyLineLaunch& Launch)
 	Dest = Db.Find(Launch.Destination);
 	Env.Wx = MakeWeather(static_cast<WeatherPreset>(Launch.WeatherPreset));
 	Env.Time = 0;
-	if (Origin)
+	const bool bCustom = Launch.Start == ESkyLineStart::Custom;
+	if (bCustom || Origin)
 	{
+		SpawnLat = bCustom ? Launch.StartLat : Origin->Lat;
+		SpawnLon = bCustom ? Launch.StartLon : Origin->Lon;
+		const double ElevM = Origin && !bCustom ? Origin->ElevFt * FT : 0.0;
 		if (ACesiumGeoreference* Geo = GetGeoreference())
 		{
-			Geo->SetOriginLongitudeLatitudeHeight(FVector(Origin->Lon, Origin->Lat, Origin->ElevFt * FT));
-			LastRebaseLat = Origin->Lat;
-			LastRebaseLon = Origin->Lon;
+			Geo->SetOriginLongitudeLatitudeHeight(FVector(SpawnLon, SpawnLat, ElevM));
+			LastRebaseLat = SpawnLat;
+			LastRebaseLon = SpawnLon;
 		}
-		// Park the model at the field while terrain streams in.
-		Sim->Place(Origin->Lat, Origin->Lon, Origin->ElevFt * FT + 50, 0, 0);
+		// Park the model at the spawn point while terrain streams in.
+		Sim->Place(SpawnLat, SpawnLon, ElevM + 50, 0, 0);
 	}
 	bWaitingForTerrain = true;
 	WaitStarted = FPlatformTime::Seconds();
@@ -192,12 +196,17 @@ static void RunwayStart(const FSkyLineRunway& Rw, bool bFromA, double& OutLat, d
 	OutElevFt = Thr.ElevFt;
 }
 
-static ApproachDef MakeApproachFor(const FSkyLineAirport& Apt, double WindFrom)
+static ApproachDef MakeApproachFor(const FSkyLineAirport& Apt, double WindFrom, const FString& RunwayIdent = FString())
 {
 	ApproachDef Ap;
 	const FSkyLineRunway* Rw = nullptr;
 	bool bFromA = true;
 	FAirportDatabase::BestRunwayEnd(Apt, WindFrom, Rw, bFromA);
+	for (const FSkyLineRunway& R : Apt.Runways)
+	{
+		if (!RunwayIdent.IsEmpty() && R.A.Ident.Equals(RunwayIdent, ESearchCase::IgnoreCase)) { Rw = &R; bFromA = true; }
+		if (!RunwayIdent.IsEmpty() && R.B.Ident.Equals(RunwayIdent, ESearchCase::IgnoreCase)) { Rw = &R; bFromA = false; }
+	}
 	if (!Rw)
 	{
 		return Ap;
@@ -219,6 +228,11 @@ static ApproachDef MakeApproachFor(const FSkyLineAirport& Apt, double WindFrom)
 void ASkyLineAircraftPawn::PositionAtStart()
 {
 	bWaitingForTerrain = false;
+	if (LaunchOptions.Start == ESkyLineStart::Custom)
+	{
+		StartAirborneCustom();
+		return;
+	}
 	if (!Origin)
 	{
 		ShowMessage(TEXT("출발 공항을 찾을 수 없습니다"));
@@ -261,7 +275,7 @@ void ASkyLineAircraftPawn::PositionAtStart()
 	if (Dest)
 	{
 		F.Plan.HasApproach = true;
-		F.Plan.Appr = MakeApproachFor(*Dest, Env.Wx.WindDir);
+		F.Plan.Appr = MakeApproachFor(*Dest, Env.Wx.WindDir, Start == ESkyLineStart::Final ? LaunchOptions.Runway : FString());
 		F.Plan.Wps.clear();
 		Waypoint W0;
 		W0.Ident = TCHAR_TO_UTF8(*Origin->Icao); W0.Lat = Origin->Lat; W0.Lon = Origin->Lon;
@@ -279,8 +293,9 @@ void ASkyLineAircraftPawn::PositionAtStart()
 	if (Start == ESkyLineStart::Final && Dest && F.Plan.HasApproach)
 	{
 		const ApproachDef& Ap = F.Plan.Appr;
-		const LatLon P = Destination(Ap.Thr, Wrap360(Ap.Crs + 180), 10 * NM);
-		const double AltFt = Ap.Elev / FT + 10 * 318.0;
+		const double FinalNm = FMath::Max(1.0, LaunchOptions.FinalNm);
+		const LatLon P = Destination(Ap.Thr, Wrap360(Ap.Crs + 180), FinalNm * NM);
+		const double AltFt = Ap.Elev / FT + FinalNm * 318.0 + 50.0;
 		const double Spd = F.Vref() + 10;
 		A.Place(P.Lat, P.Lon, AltFt * FT, Ap.Crs, Spd, 0.0);
 		A.SetAllEngines(true);
@@ -291,11 +306,20 @@ void ASkyLineAircraftPawn::PositionAtStart()
 		F.SelHdg = std::round(Wrap360(Ap.Crs - MagVar(P.Lat, P.Lon)));
 		F.SelAlt = std::round(AltFt / 100) * 100;
 		F.SelSpd = std::round(Spd);
-		F.EngageAp(true);
-		F.Vert = VertMode::Alt; F.AltHold = AltFt; F.Lat = LatMode::Hdg;
-		if (F.HasAthr()) F.ToggleAthr();
-		F.ArmApp();
-		Throttle = 0.55;
+		Throttle = A.Def.Eng.T == EngineType::Prop ? 0.5 : 0.45;
+		if (LaunchOptions.bAutopilotOnFinal)
+		{
+			F.EngageAp(true);
+			F.Vert = VertMode::Alt; F.AltHold = AltFt; F.Lat = LatMode::Hdg;
+			if (F.HasAthr()) F.ToggleAthr();
+			F.ArmApp();
+			Throttle = 0.55;
+		}
+		else
+		{
+			// hand-flown: already descending on the 3° path
+			A.Vel = A.Vel + V3(0, 0, Spd * KT * FMath::Tan(FMath::DegreesToRadians(3.0)));
+		}
 		LastRebaseLat = 1000;
 	}
 	else if (Start == ESkyLineStart::Cruise)
@@ -332,6 +356,36 @@ void ASkyLineAircraftPawn::PositionAtStart()
 	Accumulator = 0;
 	PlaceOnGlobe();
 	ShowMessage(FString::Printf(TEXT("%s · %s %s"), *Entry->Name, *Origin->Icao, Rw ? *(bFromA ? Rw->A.Ident : Rw->B.Ident) : TEXT("")));
+}
+
+void ASkyLineAircraftPawn::StartAirborneCustom()
+{
+	Aircraft& A = *Sim;
+	FlightControl& F = *Fcs;
+	double TerrainEll = 0;
+	bool bWater = false;
+	GeoidOffset = 0;  // no airport reference here: fly on ellipsoid heights
+	const double GroundM = TraceGround(SpawnLat, SpawnLon, TerrainEll, bWater) ? TerrainEll : 0.0;
+	Ground.H = GroundM;
+	Ground.Runway = false;
+	const double AltM = GroundM + LaunchOptions.StartAglFt * FT;
+	const double Spd = A.IsRotor() ? 70.0 : FMath::Max(F.Vref() * 1.35, FMath::Min(A.Def.V.Cruise * 0.55, 200.0));
+	A.Place(SpawnLat, SpawnLon, AltM, LaunchOptions.StartHdg, Spd, A.IsRotor() ? 0.0 : 2.0);
+	A.SetAllEngines(true);
+	A.GearDown = !A.Def.Gear.Retract;
+	A.GearPos = A.GearDown ? 1 : 0;
+	A.FlapIdx = 0;
+	A.FlapPos = 0;
+	if (A.IsRotor()) A.RotorRpm = 1;
+	Throttle = A.IsRotor() ? 0.55 : 0.65;
+	for (EngineCmd& C : A.EngineCmds) C.Throttle = A.IsRotor() ? 1.0 : Throttle;
+	F.SelAlt = std::round(AltM / FT / 100) * 100;
+	F.SelHdg = std::round(F.HdgMag());
+	F.SelSpd = std::round(Spd);
+	Accumulator = 0;
+	LastRebaseLat = 1000;
+	PlaceOnGlobe();
+	ShowMessage(FString::Printf(TEXT("%s · %s"), *Entry->Name, *LaunchOptions.Mission.Title));
 }
 
 bool ASkyLineAircraftPawn::TraceGround(double Lat, double Lon, double& OutEllipsoidHeight, bool& bOutWater) const
@@ -429,7 +483,7 @@ void ASkyLineAircraftPawn::Tick(float DeltaSeconds)
 	{
 		double H = 0;
 		bool bWater = false;
-		const bool bHit = Origin && TraceGround(Origin->Lat, Origin->Lon, H, bWater);
+		const bool bHit = (Origin || LaunchOptions.Start == ESkyLineStart::Custom) && TraceGround(SpawnLat, SpawnLon, H, bWater);
 		if (bHit || FPlatformTime::Seconds() - WaitStarted > 25.0)
 		{
 			PositionAtStart();

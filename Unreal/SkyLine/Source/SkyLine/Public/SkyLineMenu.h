@@ -37,6 +37,21 @@ private:
 	TSharedRef<ITableRow> MakeLiveryRow(FItem Item, const TSharedRef<STableViewBase>& Owner);
 	TSharedRef<ITableRow> MakeAirportRow(FItem Item, const TSharedRef<STableViewBase>& Owner);
 	TSharedRef<SWidget> MakeChoiceRow(const TArray<FText>& Labels, TFunction<int32()> Get, TFunction<void(int32)> Set);
+	// tabs: 0 free flight, 1 career, 2 activities
+	int32 Tab = 0;
+	TArray<TSharedPtr<FSkyLineJob>> JobItems;
+	TSharedPtr<SListView<TSharedPtr<FSkyLineJob>>> JobList;
+	TSharedPtr<FSkyLineJob> SelectedJob;
+	TArray<FItem> CareerAircraftItems, ActivityItems;
+	TSharedPtr<SListView<FItem>> CareerAircraftList, ActivityList;
+	FString CareerAircraft, SelectedActivity;
+	TSharedRef<SWidget> MakeCareerPanel();
+	TSharedRef<SWidget> MakeActivitiesPanel();
+	void RefreshCareer();
+	FReply OnAcceptJob();
+	FReply OnStartActivity();
+	FReply LaunchWith(const FSkyLineLaunch& L);
+
 	FReply OnFly();
 	FReply OnResume();
 	FReply OnRestart();

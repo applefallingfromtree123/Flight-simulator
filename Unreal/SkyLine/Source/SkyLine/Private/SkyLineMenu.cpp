@@ -8,6 +8,9 @@
 #include "SkyLineGameMode.h"
 #include "SkyLinePlayerController.h"
 #include "SkyLineSettings.h"
+#include "SkyLineCareer.h"
+#include "SkyLineActivities.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Styling/CoreStyle.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -89,8 +92,17 @@ void SSkyLineMenu::Construct(const FArguments& InArgs)
 					SNew(STextBlock).Text(LOCTEXT("Sub", "실제 지구 · 실제 기체 · 실제 항공사 도색")).Font(Font(13)).ColorAndOpacity(kDim)
 				]
 			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 14)
+			[
+				MakeChoiceRow({LOCTEXT("TabFree", "  자유 비행  "), LOCTEXT("TabCareer", "  커리어  "), LOCTEXT("TabAct", "  액티비티  ")},
+					[this] { return Tab; }, [this](int32 V) { Tab = V; if (V == 1) RefreshCareer(); })
+			]
 			+ SVerticalBox::Slot().FillHeight(1)
 			[
+				SNew(SWidgetSwitcher)
+				.WidgetIndex_Lambda([this] { return Tab; })
+				+ SWidgetSwitcher::Slot()
+				[
 				SNew(SHorizontalBox)
 				// ---------------- aircraft
 				+ SHorizontalBox::Slot().FillWidth(0.30f).Padding(0, 0, 16, 0)
@@ -269,6 +281,9 @@ void SSkyLineMenu::Construct(const FArguments& InArgs)
 						]
 					]
 				]
+				]
+				+ SWidgetSwitcher::Slot()[MakeCareerPanel()]
+				+ SWidgetSwitcher::Slot()[MakeActivitiesPanel()]
 			]
 			+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
 			[
@@ -425,6 +440,14 @@ TSharedRef<SWidget> SSkyLineMenu::MakeChoiceRow(const TArray<FText>& Labels, TFu
 
 FReply SSkyLineMenu::OnFly()
 {
+	FSkyLineLaunch L = Launch;
+	L.Mission = FSkyLineMission();
+	if (L.Start == ESkyLineStart::Custom) L.Start = ESkyLineStart::Runway;
+	return LaunchWith(L);
+}
+
+FReply SSkyLineMenu::LaunchWith(const FSkyLineLaunch& L)
+{
 	ASkyLineGameMode* GM = GameModeOf(Controller);
 	if (!GM)
 	{
@@ -432,13 +455,251 @@ FReply SSkyLineMenu::OnFly()
 	}
 	FString Error;
 	ErrorText = LOCTEXT("Loading", "기체를 불러오는 중...");
-	if (!GM->Launch(Launch, Error))
+	if (!GM->Launch(L, Error))
 	{
 		ErrorText = FText::FromString(Error);
 		return FReply::Handled();
 	}
 	ErrorText = FText::GetEmpty();
 	Controller->ShowMenu(false);
+	return FReply::Handled();
+}
+
+// ---------------------------------------------------------------------------------------------------- career
+
+void SSkyLineMenu::RefreshCareer()
+{
+	FSkyLineCareer& C = FSkyLineCareer::Get();
+	JobItems.Reset();
+	for (const FSkyLineJob& J : C.Jobs(8))
+	{
+		JobItems.Add(MakeShared<FSkyLineJob>(J));
+	}
+	SelectedJob = JobItems.Num() > 0 ? JobItems[0] : nullptr;
+	if (JobList.IsValid())
+	{
+		JobList->RequestListRefresh();
+		if (SelectedJob) JobList->SetSelection(SelectedJob);
+	}
+	CareerAircraftItems.Reset();
+	for (const FSkyLineAircraftEntry& E : FAircraftLibrary::Get().GetAircraft())
+	{
+		if (C.CanFly(E.FdmId)) CareerAircraftItems.Add(MakeShared<FString>(E.Id));
+	}
+	if (CareerAircraftList.IsValid())
+	{
+		CareerAircraftList->RequestListRefresh();
+		for (const FItem& I : CareerAircraftItems)
+		{
+			if (*I == CareerAircraft) CareerAircraftList->SetSelection(I);
+		}
+	}
+}
+
+TSharedRef<SWidget> SSkyLineMenu::MakeCareerPanel()
+{
+	return SNew(SHorizontalBox)
+	+ SHorizontalBox::Slot().FillWidth(0.28f).Padding(0, 0, 16, 0)
+	[
+		SNew(SScrollBox)
+		+ SScrollBox::Slot()
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)[Header(LOCTEXT("Pilot", "조종사"))]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(STextBlock).Font(Font(13)).AutoWrapText(true).Text_Lambda([] {
+					FSkyLineCareer& C = FSkyLineCareer::Get();
+					const USkyLineSaveGame* S = C.Data();
+					const int32 R = C.Rank();
+					const FString Next = R < 4 ? FString::Printf(TEXT("다음 면장까지 %.0f XP"), FSkyLineCareer::RankXp(R + 1) - S->Xp) : FString(TEXT("최고 등급"));
+					const FSkyLineAirport* A = FAirportDatabase::Get().Find(S->CurrentAirport);
+					return FText::FromString(FString::Printf(TEXT("%s\n경험치 %.0f XP · %s\n자금 $%s\n평판 %.0f / 100\n비행 %d회 · %.1f시간\n현재 위치 %s %s"),
+						*FSkyLineCareer::RankName(R).ToString(), S->Xp, *Next, *FText::AsNumber(FMath::RoundToInt(S->Money)).ToString(), S->Reputation,
+						S->Flights, S->Hours, *S->CurrentAirport, A ? *A->Name : TEXT("")));
+				})
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+			[
+				SNew(SButton).OnClicked_Lambda([this] { FSkyLineCareer::Get().RefreshJobs(); RefreshCareer(); return FReply::Handled(); })
+				[SNew(STextBlock).Text(LOCTEXT("Refresh", "의뢰 새로고침")).Font(Font(12))]
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 6, 0, 0)
+			[
+				SNew(SButton).OnClicked_Lambda([this] { FSkyLineCareer::Get().Reset(TEXT("RKSS")); RefreshCareer(); return FReply::Handled(); })
+				[SNew(STextBlock).Text(LOCTEXT("ResetCareer", "커리어 처음부터 (김포 RKSS)")).Font(Font(11))]
+			]
+			+ SVerticalBox::Slot().AutoHeight().Padding(0, 14, 0, 6)[Header(LOCTEXT("Log", "로그북"))]
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(STextBlock).Font(Font(11)).ColorAndOpacity(kDim).AutoWrapText(true).Text_Lambda([] {
+					FString S;
+					const TArray<FSkyLineLogEntry>& Log = FSkyLineCareer::Get().Data()->Logbook;
+					for (int32 I = 0; I < FMath::Min(8, Log.Num()); I++)
+					{
+						const FSkyLineLogEntry& E = Log[I];
+						S += FString::Printf(TEXT("%s  %s→%s  %s  %.0f fpm  $%.0f%s\n"), *E.Date.Left(10), *E.From, *E.To, *E.Aircraft, E.LandingFpm, E.Pay, E.bSuccess ? TEXT("") : TEXT(" (실패)"));
+					}
+					return FText::FromString(S.IsEmpty() ? TEXT("아직 비행 기록이 없습니다.") : S);
+				})
+			]
+		]
+	]
+	+ SHorizontalBox::Slot().FillWidth(0.40f).Padding(0, 0, 16, 0)
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)
+		[
+			SNew(STextBlock).Font(Font(15, true)).ColorAndOpacity(kAccent).Text_Lambda([] {
+				return FText::FromString(FString::Printf(TEXT("의뢰 — 출발 %s"), *FSkyLineCareer::Get().Data()->CurrentAirport));
+			})
+		]
+		+ SVerticalBox::Slot().FillHeight(1)
+		[
+			SAssignNew(JobList, SListView<TSharedPtr<FSkyLineJob>>)
+			.ListItemsSource(&JobItems)
+			.SelectionMode(ESelectionMode::Single)
+			.OnSelectionChanged_Lambda([this](TSharedPtr<FSkyLineJob> J, ESelectInfo::Type) { if (J.IsValid()) SelectedJob = J; })
+			.OnGenerateRow_Lambda([](TSharedPtr<FSkyLineJob> J, const TSharedRef<STableViewBase>& Owner) -> TSharedRef<ITableRow> {
+				const FSkyLineAirport* To = FAirportDatabase::Get().Find(J->To);
+				const FString Load = J->Kind == TEXT("화물") ? FString::Printf(TEXT("화물 %d kg"), J->Load) : J->Kind == TEXT("페리") ? FString(TEXT("기체 이동")) : FString::Printf(TEXT("승객 %d명"), J->Load);
+				return SNew(STableRow<TSharedPtr<FSkyLineJob>>, Owner).Padding(FMargin(6, 4))
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).Font(Font(14, true)).Text(FText::FromString(FString::Printf(TEXT("[%s] %s → %s  $%s"), *J->Kind, *J->From, *J->To, *FText::AsNumber(FMath::RoundToInt(J->Pay)).ToString())))
+					]
+					+ SVerticalBox::Slot().AutoHeight()
+					[
+						SNew(STextBlock).Font(Font(10)).ColorAndOpacity(kDim).Text(FText::FromString(FString::Printf(TEXT("%s · %.0f km · %s · +%.0f XP"), To ? *To->Name : *J->To, J->DistanceKm, *Load, J->Xp)))
+					]
+				];
+			})
+		]
+	]
+	+ SHorizontalBox::Slot().FillWidth(0.32f)
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)[Header(LOCTEXT("CareerAc", "기체 (면장으로 운항 가능)"))]
+		+ SVerticalBox::Slot().FillHeight(1)
+		[
+			SAssignNew(CareerAircraftList, SListView<FItem>)
+			.ListItemsSource(&CareerAircraftItems)
+			.SelectionMode(ESelectionMode::Single)
+			.OnGenerateRow(this, &SSkyLineMenu::MakeAircraftRow)
+			.OnSelectionChanged_Lambda([this](FItem Item, ESelectInfo::Type) { if (Item.IsValid()) CareerAircraft = *Item; })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+		[
+			SNew(STextBlock).Font(Font(12)).AutoWrapText(true).ColorAndOpacity(kDim).Text_Lambda([this] {
+				if (!SelectedJob.IsValid()) return LOCTEXT("NoJob", "의뢰를 선택하세요.");
+				const skyline::AircraftDef* D = nullptr;
+				if (const FSkyLineAircraftEntry* E = FAircraftLibrary::Get().Find(CareerAircraft)) D = skyline::FindAircraft(TCHAR_TO_UTF8(*E->FdmId));
+				const bool bRange = !D || D->RangeKm <= 0 || D->RangeKm >= SelectedJob->DistanceKm;
+				return FText::FromString(FString::Printf(TEXT("%s → %s, %.0f km%s"), *SelectedJob->From, *SelectedJob->To, SelectedJob->DistanceKm,
+					bRange ? TEXT("") : TEXT("\n선택한 기체의 항속거리를 넘습니다. 연료가 부족할 수 있습니다.")));
+			})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+		[
+			SNew(SButton).HAlign(HAlign_Center).OnClicked(this, &SSkyLineMenu::OnAcceptJob)
+			[SNew(STextBlock).Text(LOCTEXT("Accept", "의뢰 수락 · 출발")).Font(Font(18, true))]
+		]
+	];
+}
+
+FReply SSkyLineMenu::OnAcceptJob()
+{
+	if (!SelectedJob.IsValid() || CareerAircraft.IsEmpty())
+	{
+		ErrorText = LOCTEXT("PickJob", "의뢰와 기체를 선택하세요.");
+		return FReply::Handled();
+	}
+	FSkyLineLaunch L = Launch;
+	L.AircraftId = CareerAircraft;
+	L.LiveryId.Reset();
+	L.Airport = SelectedJob->From;
+	L.Destination = SelectedJob->To;
+	L.Runway.Reset();
+	L.Start = ESkyLineStart::Runway;
+	L.Mission.Type = ESkyLineMissionType::CareerJob;
+	L.Mission.Title = FString::Printf(TEXT("%s 의뢰 %s → %s"), *SelectedJob->Kind, *SelectedJob->From, *SelectedJob->To);
+	L.Mission.Job = *SelectedJob;
+	return LaunchWith(L);
+}
+
+// ---------------------------------------------------------------------------------------------------- activities
+
+TSharedRef<SWidget> SSkyLineMenu::MakeActivitiesPanel()
+{
+	ActivityItems.Reset();
+	for (const FSkyLineActivity& A : SkyLineActivities())
+	{
+		ActivityItems.Add(MakeShared<FString>(A.Id));
+	}
+	SelectedActivity = SkyLineActivities()[0].Id;
+	auto Find = [](const FString& Id) -> const FSkyLineActivity* {
+		for (const FSkyLineActivity& A : SkyLineActivities()) if (A.Id == Id) return &A;
+		return nullptr;
+	};
+	return SNew(SHorizontalBox)
+	+ SHorizontalBox::Slot().FillWidth(0.5f).Padding(0, 0, 16, 0)
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 6)[Header(LOCTEXT("Acts", "착륙 챌린지 · 명소 비행"))]
+		+ SVerticalBox::Slot().FillHeight(1)
+		[
+			SAssignNew(ActivityList, SListView<FItem>)
+			.ListItemsSource(&ActivityItems)
+			.SelectionMode(ESelectionMode::Single)
+			.OnSelectionChanged_Lambda([this](FItem Item, ESelectInfo::Type) { if (Item.IsValid()) SelectedActivity = *Item; })
+			.OnGenerateRow_Lambda([Find](FItem Item, const TSharedRef<STableViewBase>& Owner) -> TSharedRef<ITableRow> {
+				const FSkyLineActivity* A = Find(*Item);
+				const FString Kind = A && A->Type == ESkyLineMissionType::LandingChallenge ? TEXT("착륙 챌린지") : TEXT("명소 비행");
+				return SNew(STableRow<FItem>, Owner).Padding(FMargin(6, 4))
+				[
+					SNew(SVerticalBox)
+					+ SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Font(Font(14, true)).Text(A ? A->Title : FText::GetEmpty())]
+					+ SVerticalBox::Slot().AutoHeight()[SNew(STextBlock).Font(Font(10)).ColorAndOpacity(kDim).Text(FText::FromString(Kind))]
+				];
+			})
+		]
+	]
+	+ SHorizontalBox::Slot().FillWidth(0.5f)
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+		[
+			SNew(STextBlock).Font(Font(20, true)).AutoWrapText(true).Text_Lambda([this, Find] { const FSkyLineActivity* A = Find(SelectedActivity); return A ? A->Title : FText::GetEmpty(); })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 0, 0, 8)
+		[
+			SNew(STextBlock).Font(Font(13)).AutoWrapText(true).Text_Lambda([this, Find] {
+				const FSkyLineActivity* A = Find(SelectedActivity);
+				if (!A) return FText::GetEmpty();
+				const FSkyLineAircraftEntry* E = FAircraftLibrary::Get().Find(A->AircraftId);
+				return FText::FromString(A->Description.ToString() + TEXT("\n\n기체: ") + (E ? E->Name : A->AircraftId + TEXT(" (변환 필요)")) +
+					(A->Type == ESkyLineMissionType::LandingChallenge ? FString::Printf(TEXT("\n%s 활주로 %s · 최종접근 %.1f NM에서 수동 비행"), *A->Airport, *A->Runway, A->FinalNm) : FString()));
+			})
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0, 10, 0, 0)
+		[
+			SNew(SButton).HAlign(HAlign_Center).OnClicked(this, &SSkyLineMenu::OnStartActivity)
+			[SNew(STextBlock).Text(LOCTEXT("StartAct", "시작")).Font(Font(18, true))]
+		]
+	];
+}
+
+FReply SSkyLineMenu::OnStartActivity()
+{
+	for (const FSkyLineActivity& A : SkyLineActivities())
+	{
+		if (A.Id == SelectedActivity)
+		{
+			return LaunchWith(MakeActivityLaunch(A));
+		}
+	}
 	return FReply::Handled();
 }
 
@@ -505,6 +766,64 @@ void SSkyLineOverlay::Construct(const FArguments& InArgs)
 					const ASkyLineAircraftPawn* Ac = GetAircraft();
 					return Ac ? FText::FromString(Ac->StatusMessage) : FText::GetEmpty();
 				})
+			]
+		]
+		// mission objective (top)
+		+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Top).Padding(0, 140, 0, 0)
+		[
+			SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(FLinearColor(0.02f, 0.05f, 0.1f, 0.6f))
+			.Padding(FMargin(12, 4))
+			.Visibility_Lambda([this] {
+				const ASkyLineGameMode* GM = GameModeOf(Controller);
+				return GM && !GM->GetObjectiveText().IsEmpty() && !GM->GetResult().bDone ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+			})
+			[
+				SNew(STextBlock).Font(Font(13)).ColorAndOpacity(FLinearColor(0.75f, 0.9f, 1.f)).Text_Lambda([this] {
+					const ASkyLineGameMode* GM = GameModeOf(Controller);
+					return GM ? FText::FromString(GM->GetObjectiveText()) : FText::GetEmpty();
+				})
+			]
+		]
+		// mission result
+		+ SOverlay::Slot().HAlign(HAlign_Center).VAlign(VAlign_Center)
+		[
+			SNew(SBorder)
+			.BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+			.BorderBackgroundColor(FLinearColor(0.01f, 0.03f, 0.07f, 0.88f))
+			.Padding(FMargin(36, 24))
+			.Visibility_Lambda([this] {
+				const ASkyLineGameMode* GM = GameModeOf(Controller);
+				const ASkyLineAircraftPawn* Ac = GetAircraft();
+				const bool bCrashed = Ac && Ac->GetSim() && Ac->GetSim()->Crashed;
+				return GM && GM->GetResult().bDone && !bCrashed ? EVisibility::HitTestInvisible : EVisibility::Collapsed;
+			})
+			[
+				SNew(SVerticalBox)
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+				[
+					SNew(STextBlock).Font(Font(20, true)).Text_Lambda([this] {
+						const ASkyLineGameMode* GM = GameModeOf(Controller);
+						return GM ? FText::FromString(GM->GetMission().Title) : FText::GetEmpty();
+					})
+				]
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0, 8)
+				[
+					SNew(STextBlock).Font(Font(54, true)).ColorAndOpacity(kAccent).Text_Lambda([this] {
+						const ASkyLineGameMode* GM = GameModeOf(Controller);
+						if (!GM) return FText::GetEmpty();
+						const FSkyLineMissionResult& R = GM->GetResult();
+						return FText::FromString(R.bSuccess ? FString::Printf(TEXT("%s  %d점"), *R.Grade, R.Score) : TEXT("실패"));
+					})
+				]
+				+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
+				[
+					SNew(STextBlock).Font(Font(15)).Justification(ETextJustify::Center).Text_Lambda([this] {
+						const ASkyLineGameMode* GM = GameModeOf(Controller);
+						return GM ? FText::FromString(GM->GetResult().Text + TEXT("\n\n메뉴(M / 메뉴 버튼)에서 계속")) : FText::GetEmpty();
+					})
+				]
 			]
 		]
 		// terrain loading / crash banner (centre)

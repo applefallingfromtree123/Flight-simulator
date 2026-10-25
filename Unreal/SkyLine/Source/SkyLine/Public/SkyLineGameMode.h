@@ -28,6 +28,11 @@ public:
 	void SetTimeOfDay(float LocalHour, int32 Month, int32 Day, double Longitude);
 
 	const FSkyLineLaunch& GetLastLaunch() const { return LastLaunch; }
+	const FSkyLineMission& GetMission() const { return LastLaunch.Mission; }
+	const FSkyLineMissionResult& GetResult() const { return Result; }
+	/** One-line objective / progress shown at the top of the screen. */
+	FString GetObjectiveText() const;
+	virtual void Tick(float DeltaSeconds) override;
 	ASkyLineAircraftPawn* GetAircraft() const { return Aircraft; }
 
 private:
@@ -41,6 +46,15 @@ private:
 	TObjectPtr<ASkyLineAircraftPawn> Aircraft;
 
 	FSkyLineLaunch LastLaunch;
+	FSkyLineMissionResult Result;
+	double FlightMinutes = 0, MaxG = 1, SinceTouch = 0;
+	bool bOverspeed = false, bWasAirborne = false, bTouched = false;
+	int32 TouchCount = 0;
+	double TouchFpm = 0, TouchXtk = 0, TouchAlong = 0, TouchSpeedErr = 0, TouchBank = 0;
+
+	void ResetMission();
+	void UpdateMission(float Dt);
+	void Finish(bool bSuccess, int32 Score, const FString& Text);
 
 	void SpawnTilesets();
 	void UpdateClouds(int32 WeatherPreset);
