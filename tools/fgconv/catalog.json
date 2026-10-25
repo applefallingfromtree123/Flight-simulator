@@ -1,0 +1,5 @@
+{
+ "aircraft": [
+  { "id": "b777-300er", "name": "Boeing 777-300ER", "dir": "777", "set": "777-300ER-set.xml", "fdm": "b777-300er", "defaultLivery": "KAL" }
+ ]
+}
