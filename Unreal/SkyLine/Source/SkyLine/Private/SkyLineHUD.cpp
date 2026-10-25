@@ -138,16 +138,17 @@ void ASkyLineHUD::DrawHUD()
 	Scale = FMath::Clamp(Canvas->ClipY / 1080.f, 0.6f, 2.5f);
 	const float W = Canvas->ClipX, H = Canvas->ClipY;
 
+	McpRects.Reset();
 	DrawMcp(W / 2, 8 * Scale);
-	DrawInfo(12 * Scale, 70 * Scale);
+	DrawInfo(12 * Scale, bTouchLayout ? H - 250 * Scale : 70 * Scale);
 	// in the 3D cockpit the instruments are on the real displays
 	const bool bOnPanel = Aircraft->GetView() == ESkyLineView::Cockpit && Aircraft->GetEntry() && Aircraft->GetEntry()->Screens.Num() > 0;
 	if (!bShowInstruments || bOnPanel)
 	{
 		return;
 	}
-	const float S = 330 * Scale;
-	const float Y = H - S - 12 * Scale;
+	const float S = (bTouchLayout ? 280 : 330) * Scale;
+	const float Y = bTouchLayout ? 64 * Scale : H - S - 12 * Scale;
 	DrawPfd(12 * Scale, Y, S);
 	DrawNd(24 * Scale + S, Y, S);
 	DrawEngines(W - 300 * Scale - 12 * Scale, Y, 300 * Scale, S);
@@ -588,6 +589,8 @@ void ASkyLineHUD::DrawMcp(float CenterX, float Y)
 			AddHitBox(FVector2D(X, Y), FVector2D(Wd, H), FName(*It.Id), true, 0);
 			AddHitBox(FVector2D(X, Y + H * 0.5f), FVector2D(Wd * 0.3f, H * 0.5f), FName(*(It.Id + TEXT("-"))), true, 1);
 			AddHitBox(FVector2D(X + Wd * 0.7f, Y + H * 0.5f), FVector2D(Wd * 0.3f, H * 0.5f), FName(*(It.Id + TEXT("+"))), true, 1);
+			McpRects.Add({FBox2D(FVector2D(X, Y), FVector2D(X + Wd * 0.35f, Y + H)), FName(*(It.Id + TEXT("-")))});
+			McpRects.Add({FBox2D(FVector2D(X + Wd * 0.65f, Y), FVector2D(X + Wd, Y + H)), FName(*(It.Id + TEXT("+")))});
 			Text(TEXT("-"), X + 8 * Scale, Y + 31 * Scale, kGrey, 1);
 			Text(TEXT("+"), X + Wd - 8 * Scale, Y + 31 * Scale, kGrey, 1);
 			if (It.bActive) Rect(X + 4 * Scale, Y + H - 4 * Scale, Wd - 8 * Scale, 3 * Scale, kGreen);
@@ -596,6 +599,7 @@ void ASkyLineHUD::DrawMcp(float CenterX, float Y)
 		{
 			Rect(X + Wd / 2 - 12 * Scale, Y + 28 * Scale, 24 * Scale, 6 * Scale, It.bActive ? kGreen : FLinearColor(0.25f, 0.27f, 0.3f));
 			AddHitBox(FVector2D(X, Y), FVector2D(Wd, H), FName(*It.Id), true, 0);
+			McpRects.Add({FBox2D(FVector2D(X, Y), FVector2D(X + Wd, Y + H)), FName(*It.Id)});
 		}
 		X += Wd + Gap;
 	}
@@ -620,6 +624,19 @@ void ASkyLineHUD::NotifyHitBoxClick(FName BoxName)
 	else if (Box == TEXT("AP")) Ac->McpToggleAp();
 	else if (Box == TEXT("ATHR")) Ac->McpToggleAthr();
 	else Ac->McpMode(Box);
+}
+
+bool ASkyLineHUD::TapAt(const FVector2D& Pixel)
+{
+	for (const FMcpRect& R : McpRects)
+	{
+		if (R.Box.IsInside(Pixel))
+		{
+			NotifyHitBoxClick(R.Name);
+			return true;
+		}
+	}
+	return false;
 }
 
 void ASkyLineHUD::NotifyHitBoxBeginCursorOver(FName BoxName)

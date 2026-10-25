@@ -7,6 +7,7 @@
 #include "SkyLineGameMode.h"
 #include "SkyLineHUD.h"
 #include "SkyLineMenu.h"
+#include "SkyLineTouchControls.h"
 #include "Widgets/SWeakWidget.h"
 
 ASkyLinePlayerController::ASkyLinePlayerController()
@@ -25,6 +26,9 @@ void ASkyLinePlayerController::BeginPlay()
 	}
 	Overlay = SNew(SSkyLineOverlay).Controller(this);
 	GEngine->GameViewport->AddViewportWidgetContent(Overlay.ToSharedRef(), 5);
+	TouchControls = SNew(SSkyLineTouchControls).Controller(this);
+	GEngine->GameViewport->AddViewportWidgetContent(TouchControls.ToSharedRef(), 3);
+	SetTouchUi(PLATFORM_IOS || PLATFORM_ANDROID);
 	Menu = SNew(SSkyLineMenu).Controller(this);
 	GEngine->GameViewport->AddViewportWidgetContent(Menu.ToSharedRef(), 10);
 	ShowMenu(true);
@@ -36,6 +40,7 @@ void ASkyLinePlayerController::EndPlay(const EEndPlayReason::Type Reason)
 	{
 		if (Menu.IsValid()) GEngine->GameViewport->RemoveViewportWidgetContent(Menu.ToSharedRef());
 		if (Overlay.IsValid()) GEngine->GameViewport->RemoveViewportWidgetContent(Overlay.ToSharedRef());
+		if (TouchControls.IsValid()) GEngine->GameViewport->RemoveViewportWidgetContent(TouchControls.ToSharedRef());
 	}
 	Super::EndPlay(Reason);
 }
@@ -46,6 +51,7 @@ void ASkyLinePlayerController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &ASkyLinePlayerController::OnEscape);
 	InputComponent->BindKey(EKeys::M, IE_Pressed, this, &ASkyLinePlayerController::OnEscape);  // Esc ends PIE in the editor
 	InputComponent->BindKey(EKeys::F10, IE_Pressed, this, &ASkyLinePlayerController::OnHelp);
+	InputComponent->BindKey(EKeys::F9, IE_Pressed, this, &ASkyLinePlayerController::OnToggleTouch);  // try the iPad layout on PC
 	InputComponent->BindKey(EKeys::I, IE_Pressed, this, &ASkyLinePlayerController::OnToggleInstruments);
 	InputComponent->BindKey(EKeys::Gamepad_Special_Right, IE_Pressed, this, &ASkyLinePlayerController::OnEscape);
 }
@@ -98,6 +104,29 @@ void ASkyLinePlayerController::OnToggleInstruments()
 	if (ASkyLineHUD* Hud = Cast<ASkyLineHUD>(GetHUD()))
 	{
 		Hud->bShowInstruments = !Hud->bShowInstruments;
+	}
+}
+
+void ASkyLinePlayerController::SetTouchUi(bool bOn)
+{
+	bTouchUi = bOn;
+	if (TouchControls.IsValid())
+	{
+		TouchControls->SetVisibility(bOn ? EVisibility::Visible : EVisibility::Collapsed);
+	}
+}
+
+void ASkyLinePlayerController::OnToggleTouch()
+{
+	SetTouchUi(!bTouchUi);
+}
+
+void ASkyLinePlayerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+	if (ASkyLineHUD* Hud = Cast<ASkyLineHUD>(GetHUD()))
+	{
+		Hud->bTouchLayout = bTouchUi;
 	}
 }
 

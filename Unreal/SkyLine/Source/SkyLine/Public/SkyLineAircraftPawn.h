@@ -57,6 +57,21 @@ public:
 	void TogglePause() { bSimPaused = !bSimPaused; }
 	void ShowMessage(const FString& Msg);
 
+	/** On-screen touch controls (iPad). Written by SSkyLineTouchControls, read every frame. */
+	struct FTouchInput
+	{
+		bool bStick = false;
+		double Pitch = 0, Roll = 0, Yaw = 0;
+		double Throttle = -1;  // >= 0 while the throttle lever is being dragged
+		bool bBrake = false;
+	};
+	FTouchInput Touch;
+	double GetThrottle() const { return Throttle; }
+	/** Named cockpit commands for buttons: GEAR, FLAPS_UP, FLAPS_DOWN, PARK, SPOILERS, VIEW, AP, ATHR, APP, TOGA, ENGINES, PAUSE, RATE. */
+	void Command(const FString& Name);
+	void TouchLook(double Dx, double Dy);
+	void TouchZoom(double Factor);
+
 	// MCP / FCU actions (also used by the clickable HUD panel).
 	void McpToggleAp();
 	void McpToggleAthr();

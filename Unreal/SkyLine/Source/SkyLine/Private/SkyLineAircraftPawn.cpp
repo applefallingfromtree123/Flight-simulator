@@ -709,6 +709,12 @@ void ASkyLineAircraftPawn::PollInput(float Dt)
 	Pin.Pitch = FMath::Clamp(KeyPitch - Curve(PadY), -1.0, 1.0);
 	Pin.Roll = FMath::Clamp(KeyRoll + Curve(PadX), -1.0, 1.0);
 	Pin.Yaw = FMath::Clamp(KeyYaw + Curve(PadRX), -1.0, 1.0);
+	if (Touch.bStick)
+	{
+		Pin.Pitch = FMath::Clamp(Pin.Pitch + Curve(Touch.Pitch), -1.0, 1.0);
+		Pin.Roll = FMath::Clamp(Pin.Roll + Curve(Touch.Roll), -1.0, 1.0);
+	}
+	Pin.Yaw = FMath::Clamp(Pin.Yaw + Touch.Yaw, -1.0, 1.0);
 	// Pitch trim: Numpad 1 nose up, Numpad 7 nose down (also Home/End).
 	Pin.Trim = Key(EKeys::NumPadOne) + Key(EKeys::End) - Key(EKeys::NumPadSeven) - Key(EKeys::Home);
 
@@ -723,6 +729,11 @@ void ASkyLineAircraftPawn::PollInput(float Dt)
 	{
 		Throttle = FMath::Clamp(Throttle + ThrRate * Dt * 0.45, 0.0, 1.0);
 		if (bAthrDriving && FMath::Abs(ThrRate) > 0.5) { Fcs->Athr = AthrMode::Off; ShowMessage(TEXT("A/THR OFF (수동 스로틀)")); }
+	}
+	if (Touch.Throttle >= 0)
+	{
+		if (bAthrDriving && FMath::Abs(Touch.Throttle - Throttle) > 0.05) { Fcs->Athr = AthrMode::Off; ShowMessage(TEXT("A/THR OFF (수동 스로틀)")); }
+		Throttle = FMath::Clamp(Touch.Throttle, 0.0, 1.0);
 	}
 	if (Key(EKeys::F4) > 0) Throttle = 1.0;
 	if (Key(EKeys::F1) > 0) Throttle = 0.0;
@@ -743,7 +754,7 @@ void ASkyLineAircraftPawn::PollInput(float Dt)
 	}
 
 	// Brakes: '.' hold (or gamepad triggers).
-	const double Brake = FMath::Max(Key(EKeys::Period), PadBrake);
+	const double Brake = FMath::Max3(Key(EKeys::Period), PadBrake, Touch.bBrake ? 1.0 : 0.0);
 	Sim->BrakeL = Sim->BrakeR = Brake;
 	if (Brake > 0.1) Sim->AutobrakeCmd = 0;
 
@@ -793,6 +804,44 @@ void ASkyLineAircraftPawn::SetupPlayerInputComponent(UInputComponent* Input)
 	Input->BindKey(EKeys::Gamepad_RightThumbstick, IE_Pressed, this, &ASkyLineAircraftPawn::OnCycleView);
 	Input->BindKey(EKeys::Gamepad_FaceButton_Left, IE_Pressed, this, &ASkyLineAircraftPawn::OnParkingBrake);
 	Input->BindKey(EKeys::Gamepad_FaceButton_Right, IE_Pressed, this, &ASkyLineAircraftPawn::McpToggleAp);
+}
+
+void ASkyLineAircraftPawn::Command(const FString& Name)
+{
+	if (Name == TEXT("GEAR")) OnGear();
+	else if (Name == TEXT("FLAPS_UP")) OnFlapsUp();
+	else if (Name == TEXT("FLAPS_DOWN")) OnFlapsDown();
+	else if (Name == TEXT("PARK")) OnParkingBrake();
+	else if (Name == TEXT("SPOILERS")) OnSpoilers();
+	else if (Name == TEXT("VIEW")) OnCycleView();
+	else if (Name == TEXT("AP")) McpToggleAp();
+	else if (Name == TEXT("ATHR")) McpToggleAthr();
+	else if (Name == TEXT("APP")) OnApp();
+	else if (Name == TEXT("TOGA")) OnToga();
+	else if (Name == TEXT("ENGINES")) OnEngines();
+	else if (Name == TEXT("PAUSE")) TogglePause();
+	else if (Name == TEXT("RATE")) OnTimeScale();
+	else if (Name == TEXT("AUTOBRAKE")) OnAutobrake();
+}
+
+void ASkyLineAircraftPawn::TouchLook(double Dx, double Dy)
+{
+	if (View == ESkyLineView::Cockpit)
+	{
+		HeadYaw = FMath::Clamp(HeadYaw + Dx * 0.2, -160.0, 160.0);
+		HeadPitch = FMath::Clamp(HeadPitch + Dy * 0.2, -70.0, 60.0);
+	}
+	else
+	{
+		OrbitYaw = Wrap360(OrbitYaw + Dx * 0.25);
+		OrbitPitch = FMath::Clamp(OrbitPitch + Dy * 0.25, -85.0, 85.0);
+	}
+}
+
+void ASkyLineAircraftPawn::TouchZoom(double Factor)
+{
+	if (View == ESkyLineView::Cockpit) CockpitFov = FMath::Clamp(CockpitFov / Factor, 25.0, 100.0);
+	else OrbitDistance = FMath::Clamp(OrbitDistance / Factor, 800.0, 60000.0);
 }
 
 void ASkyLineAircraftPawn::OnGear()

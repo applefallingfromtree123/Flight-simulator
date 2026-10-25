@@ -6,6 +6,7 @@
 #include "CesiumSunSky.h"
 #include "Components/VolumetricCloudComponent.h"
 #include "Engine/World.h"
+#include "HAL/IConsoleManager.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInterface.h"
@@ -15,6 +16,10 @@
 #include "SkyLinePlayerController.h"
 #include "SkyLineSettings.h"
 #include "Atmosphere.h"
+
+static TAutoConsoleVariable<int32> CVarMobileQuality(
+	TEXT("skyline.MobileQuality"), PLATFORM_IOS || PLATFORM_ANDROID ? 1 : 0,
+	TEXT("1 = lighter terrain streaming for tablets (set by the iOS device profile)."));
 
 namespace
 {
@@ -77,6 +82,10 @@ void ASkyLineGameMode::SpawnTilesets()
 		ACesium3DTileset* T = World->SpawnActor<ACesium3DTileset>(ACesium3DTileset::StaticClass(), FTransform::Identity, Params);
 		T->SetTilesetSource(ETilesetSource::FromCesiumIon);
 		T->SetIonAssetID(AssetId);
+		if (CVarMobileQuality.GetValueOnGameThread() > 0)
+		{
+			T->SetMaximumScreenSpaceError(32.0);  // coarser tiles: less memory and bandwidth on iPad
+		}
 		if (!S->CesiumIonToken.IsEmpty())
 		{
 			T->SetIonAccessToken(S->CesiumIonToken);

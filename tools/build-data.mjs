@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SRC = 'https://raw.githubusercontent.com/davidmegginson/ourairports-data/main/';
-const OUT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../public/data');
+const OUT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../Unreal/SkyLine/Data');
 
 function parseCSV(text) {
   const rows = [];

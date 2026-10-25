@@ -26,6 +26,11 @@ public:
 	FString HoveredField;
 	bool bShowInstruments = true;
 
+	/** Touch layout: instruments move to the top so the on-screen yoke/throttle fit at the bottom. */
+	bool bTouchLayout = false;
+	/** Handles a tap (canvas pixels) on the MCP strip. Returns true if a control was hit. */
+	bool TapAt(const FVector2D& Pixel);
+
 	/** Live instrument texture for 3D cockpit displays ("PFD", "ND", "EICAS"; "MFD" shows the PFD). */
 	UTexture* GetScreenTexture(const FString& Kind);
 
@@ -42,6 +47,9 @@ private:
 	double ScreenUpdateTime = 0;
 
 	void DrawIntoTarget(UCanvas* TargetCanvas, int32 Height, int32 Which);
+
+	struct FMcpRect { FBox2D Box; FName Name; };
+	TArray<FMcpRect> McpRects;
 
 	ASkyLineAircraftPawn* Aircraft = nullptr;
 	float Scale = 1.f;

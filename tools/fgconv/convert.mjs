@@ -20,14 +20,17 @@ const repo = path.resolve(here, '../..');
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args.splice(i, 2)[1] : d; };
 const flag = k => { const i = args.indexOf(k); if (i >= 0) args.splice(i, 1); return i >= 0; };
+// --profile ipad: smaller textures and a curated set so the iPad app stays within memory and bundle limits.
+const PROFILE = opt('--profile', 'pc');
+const IPAD = PROFILE === 'ipad';
 const OUT = path.resolve(opt('--out', path.join(repo, 'Unreal/SkyLine/Aircraft')));
 const CACHE = path.resolve(opt('--cache', path.join(repo, '.fgcache')));
-const MAX_TEX = +opt('--max-tex', 4096);
-const MAX_LIVERIES = +opt('--liveries', 1000);
+const MAX_TEX = +opt('--max-tex', IPAD ? 1024 : 4096);
+const MAX_LIVERIES = +opt('--liveries', IPAD ? 12 : 1000);
 const NO_INTERIOR = flag('--no-interior');
 const OFFLINE = flag('--offline');
 const catalog = JSON.parse(fs.readFileSync(path.join(here, 'catalog.json'), 'utf8'));
-const ids = args.length ? args : catalog.aircraft.map(a => a.id);
+const ids = args.length ? args : catalog.aircraft.filter(a => !IPAD || a.ipad).map(a => a.id);
 
 const fg = new FGFS(CACHE, { offline: OFFLINE, log: s => process.stdout.write(s + '\n') });
 
@@ -256,7 +259,9 @@ async function convert(entry) {
 
   // ---------- livery textures ----------
   const livOut = [];
-  await pool(liveries.slice(0, MAX_LIVERIES), 4, async (l) => {
+  // keep the default livery when trimming the list
+  const keep = [def, ...liveries.filter(l => l !== def)].filter(Boolean).slice(0, MAX_LIVERIES);
+  await pool(keep, 4, async (l) => {
     const files = {};
     for (const s of model.slots) {
       const f = l.textures.get(s.key) ?? s.defaultTex;
