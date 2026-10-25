@@ -2,6 +2,7 @@
 
 #include "CanvasItem.h"
 #include "Engine/Canvas.h"
+#include "Engine/CanvasRenderTarget2D.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "SkyLineAircraftPawn.h"
@@ -124,12 +125,24 @@ void ASkyLineHUD::DrawHUD()
 	}
 	SmallFont = GEngine->GetSmallFont();
 	MediumFont = GEngine->GetMediumFont();
+	// refresh the 3D cockpit displays at ~30 Hz
+	const double Now = FPlatformTime::Seconds();
+	if (ScreenTargets.Num() > 0 && Now - ScreenUpdateTime > 1.0 / 30.0)
+	{
+		ScreenUpdateTime = Now;
+		for (UCanvasRenderTarget2D* T : ScreenTargets)
+		{
+			if (T) T->UpdateResource();
+		}
+	}
 	Scale = FMath::Clamp(Canvas->ClipY / 1080.f, 0.6f, 2.5f);
 	const float W = Canvas->ClipX, H = Canvas->ClipY;
 
 	DrawMcp(W / 2, 8 * Scale);
 	DrawInfo(12 * Scale, 70 * Scale);
-	if (!bShowInstruments)
+	// in the 3D cockpit the instruments are on the real displays
+	const bool bOnPanel = Aircraft->GetView() == ESkyLineView::Cockpit && Aircraft->GetEntry() && Aircraft->GetEntry()->Screens.Num() > 0;
+	if (!bShowInstruments || bOnPanel)
 	{
 		return;
 	}
@@ -165,6 +178,55 @@ void ASkyLineHUD::DrawInfo(float X, float Y)
 	if (A.TailStrike) Line3 += TEXT("TAIL STRIKE  ");
 	if (!Line3.IsEmpty()) Text(Line3, X, Y + 36 * Scale, kAmber);
 }
+
+// ------------------------------------------------------------------------------------------- cockpit displays
+
+UTexture* ASkyLineHUD::GetScreenTexture(const FString& Kind)
+{
+	if (ScreenTargets.Num() == 0)
+	{
+		for (int32 I = 0; I < 3; I++)
+		{
+			UCanvasRenderTarget2D* T = UCanvasRenderTarget2D::CreateCanvasRenderTarget2D(this, UCanvasRenderTarget2D::StaticClass(), 768, 768);
+			if (!T)
+			{
+				continue;
+			}
+			T->ClearColor = FLinearColor::Black;
+			if (I == 0) T->OnCanvasRenderTargetUpdate.AddDynamic(this, &ASkyLineHUD::DrawPfdTarget);
+			else if (I == 1) T->OnCanvasRenderTargetUpdate.AddDynamic(this, &ASkyLineHUD::DrawNdTarget);
+			else T->OnCanvasRenderTargetUpdate.AddDynamic(this, &ASkyLineHUD::DrawEicasTarget);
+			ScreenTargets.Add(T);
+		}
+	}
+	const int32 Index = Kind == TEXT("ND") ? 1 : Kind == TEXT("EICAS") ? 2 : 0;
+	return ScreenTargets.IsValidIndex(Index) ? ScreenTargets[Index] : nullptr;
+}
+
+void ASkyLineHUD::DrawIntoTarget(UCanvas* TargetCanvas, int32 Height, int32 Which)
+{
+	Aircraft = Cast<ASkyLineAircraftPawn>(GetOwningPawn());
+	if (!TargetCanvas || !Aircraft || !Aircraft->GetSim() || !GEngine)
+	{
+		return;
+	}
+	SmallFont = GEngine->GetSmallFont();
+	MediumFont = GEngine->GetMediumFont();
+	UCanvas* SavedCanvas = Canvas;
+	const float SavedScale = Scale;
+	Canvas = TargetCanvas;
+	Scale = Height / 330.f;
+	const float S = static_cast<float>(Height);
+	if (Which == 0) DrawPfd(0, 0, S);
+	else if (Which == 1) DrawNd(0, 0, S);
+	else DrawEngines(0, 0, S, S);
+	Canvas = SavedCanvas;
+	Scale = SavedScale;
+}
+
+void ASkyLineHUD::DrawPfdTarget(UCanvas* TargetCanvas, int32 Width, int32 Height) { DrawIntoTarget(TargetCanvas, Height, 0); }
+void ASkyLineHUD::DrawNdTarget(UCanvas* TargetCanvas, int32 Width, int32 Height) { DrawIntoTarget(TargetCanvas, Height, 1); }
+void ASkyLineHUD::DrawEicasTarget(UCanvas* TargetCanvas, int32 Width, int32 Height) { DrawIntoTarget(TargetCanvas, Height, 2); }
 
 // ------------------------------------------------------------------------------------------- PFD
 

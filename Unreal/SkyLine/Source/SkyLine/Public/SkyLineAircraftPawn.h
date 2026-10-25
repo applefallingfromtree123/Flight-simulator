@@ -16,6 +16,8 @@ class UCameraComponent;
 class UCesiumGlobeAnchorComponent;
 class UStaticMeshComponent;
 class UAudioComponent;
+class UPointLightComponent;
+class USpotLightComponent;
 class USkyLineEngineSound;
 
 UCLASS()
@@ -79,6 +81,15 @@ private:
 	TObjectPtr<UAudioComponent> Audio;
 	UPROPERTY(Transient)
 	TObjectPtr<USkyLineEngineSound> EngineSound;
+	/** Exterior lights: nav (red/green/white), beacon, strobes, landing light. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UPointLightComponent>> NavLights;
+	UPROPERTY(Transient)
+	TObjectPtr<UPointLightComponent> Beacon;
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UPointLightComponent>> Strobes;
+	UPROPERTY(Transient)
+	TObjectPtr<USpotLightComponent> LandingLight;
 	/** Runtime meshes, materials and textures. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> ModelObjects;
@@ -148,6 +159,10 @@ private:
 	void CreatePartComponents();
 	void UpdateParts(float Dt);
 	void UpdateSound();
+	void ApplyCockpitScreens();
+	void CreateLights();
+	void UpdateLights();
+	bool bScreensApplied = false;
 
 	void OnGear();
 	void OnFlapsUp();

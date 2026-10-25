@@ -6,7 +6,10 @@
 #include "SkyLineHUD.generated.h"
 
 class ASkyLineAircraftPawn;
+class UCanvas;
+class UCanvasRenderTarget2D;
 class UFont;
+class UTexture;
 
 UCLASS()
 class SKYLINE_API ASkyLineHUD : public AHUD
@@ -23,7 +26,23 @@ public:
 	FString HoveredField;
 	bool bShowInstruments = true;
 
+	/** Live instrument texture for 3D cockpit displays ("PFD", "ND", "EICAS"; "MFD" shows the PFD). */
+	UTexture* GetScreenTexture(const FString& Kind);
+
 private:
+	UFUNCTION()
+	void DrawPfdTarget(UCanvas* TargetCanvas, int32 Width, int32 Height);
+	UFUNCTION()
+	void DrawNdTarget(UCanvas* TargetCanvas, int32 Width, int32 Height);
+	UFUNCTION()
+	void DrawEicasTarget(UCanvas* TargetCanvas, int32 Width, int32 Height);
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UCanvasRenderTarget2D>> ScreenTargets;  // PFD, ND, EICAS
+	double ScreenUpdateTime = 0;
+
+	void DrawIntoTarget(UCanvas* TargetCanvas, int32 Height, int32 Which);
+
 	ASkyLineAircraftPawn* Aircraft = nullptr;
 	float Scale = 1.f;
 	UFont* SmallFont = nullptr;

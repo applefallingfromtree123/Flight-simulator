@@ -2,12 +2,14 @@
 
 Creates the base materials used by the runtime aircraft loader (Source/SkyLine/Private/AircraftModelLoader.cpp),
 so the repository does not need to carry binary .uasset files. Safe to run repeatedly: existing assets are kept.
-Parameters: BaseColorTexture (texture), BaseColorFactor (vector), Roughness, Metallic, Opacity (scalar), Emissive (vector).
+Parameters: BaseColorTexture, EmissiveTexture (textures), BaseColorFactor, Emissive (vectors), Roughness, Metallic,
+Opacity, EmissiveStrength (scalars).
 """
 import unreal
 
 MAT_DIR = "/Game/SkyLine/Materials"
 WHITE = "/Engine/EngineResources/WhiteSquareTexture"
+BLACK = "/Engine/EngineResources/Black"
 
 
 def _scalar(mat, mel, name, default, x, y):
@@ -46,7 +48,18 @@ def _make(name, blend, two_sided):
 
     mel.connect_material_property(_scalar(mat, mel, "Roughness", 0.6, -500, 150), "", unreal.MaterialProperty.MP_ROUGHNESS)
     mel.connect_material_property(_scalar(mat, mel, "Metallic", 0.0, -500, 250), "", unreal.MaterialProperty.MP_METALLIC)
-    mel.connect_material_property(_vector(mat, mel, "Emissive", unreal.LinearColor(0, 0, 0, 1), -500, 350), "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
+    # emissive = Emissive colour + EmissiveTexture * EmissiveStrength (cockpit displays use a live render target)
+    etex = mel.create_material_expression(mat, unreal.MaterialExpressionTextureSampleParameter2D, -1300, 600)
+    etex.set_editor_property("parameter_name", "EmissiveTexture")
+    etex.set_editor_property("texture", unreal.load_asset(BLACK))
+    estr = _scalar(mat, mel, "EmissiveStrength", 0.0, -1300, 850)
+    emul = mel.create_material_expression(mat, unreal.MaterialExpressionMultiply, -900, 650)
+    mel.connect_material_expressions(etex, "RGB", emul, "A")
+    mel.connect_material_expressions(estr, "", emul, "B")
+    eadd = mel.create_material_expression(mat, unreal.MaterialExpressionAdd, -500, 350)
+    mel.connect_material_expressions(_vector(mat, mel, "Emissive", unreal.LinearColor(0, 0, 0, 1), -900, 350), "", eadd, "A")
+    mel.connect_material_expressions(emul, "", eadd, "B")
+    mel.connect_material_property(eadd, "", unreal.MaterialProperty.MP_EMISSIVE_COLOR)
 
     if blend == unreal.BlendMode.BLEND_MASKED:
         mel.connect_material_property(tex, "A", unreal.MaterialProperty.MP_OPACITY_MASK)

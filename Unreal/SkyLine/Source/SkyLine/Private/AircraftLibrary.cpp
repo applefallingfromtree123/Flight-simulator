@@ -159,6 +159,18 @@ void FAircraftLibrary::Rescan()
 				}
 			}
 		}
+		const TArray<TSharedPtr<FJsonValue>>* ScreenArr = nullptr;
+		if (Json->TryGetArrayField(TEXT("screens"), ScreenArr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *ScreenArr)
+			{
+				const TSharedPtr<FJsonObject> P = V->AsObject();
+				FSkyLineScreen Sc;
+				Sc.Kind = P->GetStringField(TEXT("kind"));
+				for (const TSharedPtr<FJsonValue>& X : P->GetArrayField(TEXT("materials"))) Sc.Materials.Add(FName(*X->AsString()));
+				E.Screens.Add(MoveTemp(Sc));
+			}
+		}
 		if (!skyline::FindAircraft(TCHAR_TO_UTF8(*E.FdmId)))
 		{
 			UE_LOG(LogSkyLine, Warning, TEXT("%s: flight model '%s' not in the database, using defaults"), *E.Id, *E.FdmId);

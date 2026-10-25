@@ -137,14 +137,25 @@ async function convert(entry) {
   const slotTex = new Map();
   for (const s of model.slots) slotTex.set(s, def?.textures.get(s.key) ?? s.defaultTex);
   const matDefs = new Map();
+  // Cockpit display surfaces get their own materials so Unreal can show live PFD/ND/EICAS render targets on them.
+  const SCREEN_RX = /pfd|\bnd\b|nd[._-]?screen|navdisplay|eicas|ecam|ewd|mfd|efis[._-]?screen|lcd|\bdu\d|screen/i;
+  const SCREEN_EXCL = /off|bezel|frame|btn|button|knob|switch|letter|panel|glare|ovlay|overlay|keyboard|reflect|glass|cover|\.set|\.on\b|mount|light|cdu|efb|chart|clock|radio|freq|xpdr|wiper/i;
+  const screenKind = p => {
+    if (!p.interior || !SCREEN_RX.test(p.name) || SCREEN_EXCL.test(p.name)) return null;
+    if (/pfd/i.test(p.name)) return 'PFD';
+    if (/eicas|ecam|ewd/i.test(p.name)) return 'EICAS';
+    if (/\bnd|nav|efis|mfd/i.test(p.name)) return 'ND';
+    return 'MFD';
+  };
   const materialKeyOf = (p, s) => {
     const acm = p.materials[s.mat] ?? p.materials[0];
     const twoSided = !!(s.flags & 0x20);
     const texName = s.texture ?? p.obj.texture;
     const tex = p.slot ? slotTex.get(p.slot) : p.texOverride ?? (texName ? p.texFiles.get(texName) : null);
     const glass = p.effect === 'glass' || (acm?.trans ?? 0) > 0.05 || (p.alpha ?? 1) < 0.95;
-    const id = [p.interior ? 'I' : 'E', p.slot ? `S${p.slot.index}` : '', tex ?? '', acm?.name, acm?.rgb, acm?.emis, acm?.trans, twoSided, glass, p.effect].join('|');
-    if (!matDefs.has(id)) matDefs.set(id, { id, acm, tex, twoSided, glass, slot: p.slot, effect: p.effect, interior: p.interior, alpha: p.alpha });
+    const screen = screenKind(p);
+    const id = [p.interior ? 'I' : 'E', p.slot ? `S${p.slot.index}` : '', screen ?? '', tex ?? '', acm?.name, acm?.rgb, acm?.emis, acm?.trans, twoSided, glass, p.effect].join('|');
+    if (!matDefs.has(id)) matDefs.set(id, { id, acm, tex, twoSided, glass: glass && !screen, slot: p.slot, effect: p.effect, interior: p.interior, alpha: p.alpha, screen });
     return { id, interior: p.interior };
   };
   // Static exterior/interior, plus animated gear/flap poses and spinning props/rotors as separate nodes.
@@ -185,12 +196,13 @@ async function convert(entry) {
   const buckets = meshes.flatMap(m => m.buckets);
   console.log(`  ${tris.toLocaleString()} triangles · ${poses.map(p => `${p.group} ${p.objects} parts`).join(', ') || 'no poses'} · ${spins.length} spinning parts`);
 
+  const screens = {};
   const matIndex = new Map();
   const slotMaterials = new Map(model.slots.map(s => [s.index, []]));
   for (const b of buckets) {
     if (matIndex.has(b.id)) continue;
     const d = matDefs.get(b.id);
-    const name = `${d.slot ? `LIVERY${d.slot.index}_` : d.glass ? 'GLASS_' : ''}${(d.acm?.name || 'mat').replace(/[^\w]/g, '')}_${matIndex.size}`;
+    const name = `${d.slot ? `LIVERY${d.slot.index}_` : d.screen ? `SCREEN_${d.screen}_` : d.glass ? 'GLASS_' : ''}${(d.acm?.name || 'mat').replace(/[^\w]/g, '')}_${matIndex.size}`;
     const opaque = !!d.slot || d.effect === 'paint';
     const texture = d.tex ? await embed(d.tex, opaque) : null;
     const rec = d.tex ? await loadImage(d.tex) : null;
@@ -211,6 +223,7 @@ async function convert(entry) {
     }
     matIndex.set(b.id, gw.material(m));
     if (d.slot) slotMaterials.get(d.slot.index).push(name);
+    if (d.screen) (screens[d.screen] ??= []).push(name);
   }
 
   // ---------- meshes ----------
@@ -267,6 +280,7 @@ async function convert(entry) {
     eye: eye ? [-eye.num('x-offset-m'), eye.num('y-offset-m'), -eye.num('z-offset-m')] : null,
     slots: model.slots.map(s => ({ index: s.index, property: s.key, materials: slotMaterials.get(s.index) })),
     poses, spins,
+    screens: Object.entries(screens).map(([kind, materials]) => ({ kind, materials })),
     defaultLivery: def?.id ?? null,
     liveries: livOut,
   };

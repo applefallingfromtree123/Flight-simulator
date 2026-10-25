@@ -1,7 +1,10 @@
 #include "SkyLineAircraftPawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Materials/MaterialInstanceDynamic.h"
 #include "Components/AudioComponent.h"
+#include "Components/PointLightComponent.h"
+#include "Components/SpotLightComponent.h"
 #include "SkyLineEngineSound.h"
 #include "CesiumGeoreference.h"
 #include "CesiumGlobeAnchorComponent.h"
@@ -115,6 +118,7 @@ bool ASkyLineAircraftPawn::SetupAircraft(const FSkyLineLaunch& Launch, FString& 
 	ExteriorMesh->SetRelativeLocation(MeshOffset);
 	InteriorMesh->SetRelativeLocation(MeshOffset);
 	CreatePartComponents();
+	CreateLights();
 	OrbitDistance = FMath::Max(1500.0, Entry->Bounds.GetSize().GetMax() * 1.6);
 
 	ApplyLivery(Launch.LiveryId.IsEmpty() ? Entry->DefaultLivery : Launch.LiveryId);
@@ -456,6 +460,97 @@ void ASkyLineAircraftPawn::Tick(float DeltaSeconds)
 	UpdateParts(DeltaSeconds);
 	UpdateCamera(DeltaSeconds);
 	UpdateSound();
+	UpdateLights();
+	if (!bScreensApplied)
+	{
+		ApplyCockpitScreens();
+	}
+}
+
+void ASkyLineAircraftPawn::CreateLights()
+{
+	const FBox B = Entry->Bounds;
+	const FVector Off = MeshOffset;
+	auto Point = [this](const FVector& Rel, const FLinearColor& Color, float Intensity, float Radius) {
+		UPointLightComponent* L = NewObject<UPointLightComponent>(this);
+		L->SetupAttachment(Body);
+		L->SetRelativeLocation(Rel);
+		L->SetLightColor(Color);
+		L->SetIntensityUnits(ELightUnits::Candelas);
+		L->SetIntensity(Intensity);
+		L->SetAttenuationRadius(Radius);
+		L->SetCastShadows(false);
+		L->RegisterComponent();
+		return L;
+	};
+	// wingtips at the widest point, tail light at the very back
+	const double MidX = (B.Min.X + B.Max.X) * 0.5 - (B.Max.X - B.Min.X) * 0.08;
+	const double WingZ = B.Min.Z + (B.Max.Z - B.Min.Z) * 0.35;
+	NavLights.Add(Point(Off + FVector(MidX, B.Min.Y, WingZ), FLinearColor(1, 0.05f, 0.05f), 60, 1500));
+	NavLights.Add(Point(Off + FVector(MidX, B.Max.Y, WingZ), FLinearColor(0.05f, 1, 0.2f), 60, 1500));
+	NavLights.Add(Point(Off + FVector(B.Min.X, 0, B.Min.Z + (B.Max.Z - B.Min.Z) * 0.5), FLinearColor::White, 40, 1500));
+	Strobes.Add(Point(Off + FVector(MidX, B.Min.Y + 30, WingZ), FLinearColor::White, 0, 4000));
+	Strobes.Add(Point(Off + FVector(MidX, B.Max.Y - 30, WingZ), FLinearColor::White, 0, 4000));
+	Beacon = Point(Off + FVector((B.Min.X + B.Max.X) * 0.5, 0, B.Max.Z * 0.6), FLinearColor(1, 0.1f, 0.05f), 0, 3000);
+	LandingLight = NewObject<USpotLightComponent>(this);
+	LandingLight->SetupAttachment(Body);
+	LandingLight->SetRelativeLocation(Off + FVector(B.Max.X - (B.Max.X - B.Min.X) * 0.15, 0, B.Min.Z + 150));
+	LandingLight->SetRelativeRotation(FRotator(-4, 0, 0));
+	LandingLight->SetIntensityUnits(ELightUnits::Candelas);
+	LandingLight->SetIntensity(0);
+	LandingLight->SetAttenuationRadius(120000);
+	LandingLight->SetOuterConeAngle(22);
+	LandingLight->SetInnerConeAngle(10);
+	LandingLight->SetLightColor(FLinearColor(1, 0.95f, 0.85f));
+	LandingLight->RegisterComponent();
+}
+
+void ASkyLineAircraftPawn::UpdateLights()
+{
+	if (!Sim || !LandingLight)
+	{
+		return;
+	}
+	bool bRunning = false;
+	for (const Engine& E : Sim->Engines) bRunning |= E.Running;
+	const double T = FPlatformTime::Seconds();
+	const bool bAirborneOrRunway = !Sim->OnGround || Sim->OnRunway;
+	for (UPointLightComponent* L : NavLights) L->SetVisibility(bRunning || !Sim->OnGround);
+	Beacon->SetIntensity(bRunning && FMath::Fmod(T, 1.2) < 0.12 ? 20000.f : 0.f);
+	const bool bStrobe = bAirborneOrRunway && bRunning && FMath::Fmod(T, 1.0) < 0.06;
+	for (UPointLightComponent* L : Strobes) L->SetIntensity(bStrobe ? 60000.f : 0.f);
+	const bool bLanding = bRunning && Sim->Alt / FT < 10000.0 + Ground.H / FT && (Sim->GearDown || Sim->OnGround) && bAirborneOrRunway;
+	LandingLight->SetIntensity(bLanding ? 250000.f : 0.f);
+}
+
+void ASkyLineAircraftPawn::ApplyCockpitScreens()
+{
+	APlayerController* PC = Cast<APlayerController>(GetController());
+	ASkyLineHUD* Hud = PC ? Cast<ASkyLineHUD>(PC->GetHUD()) : nullptr;
+	if (!Hud || !Entry)
+	{
+		return;
+	}
+	bScreensApplied = true;
+	for (const FSkyLineScreen& Sc : Entry->Screens)
+	{
+		UTexture* Tex = Hud->GetScreenTexture(Sc.Kind);
+		if (!Tex)
+		{
+			continue;
+		}
+		for (const FName& Mat : Sc.Materials)
+		{
+			if (UMaterialInstanceDynamic** Mid = Model.Materials.Find(Mat))
+			{
+				(*Mid)->SetTextureParameterValue(TEXT("BaseColorTexture"), Tex);
+				(*Mid)->SetTextureParameterValue(TEXT("EmissiveTexture"), Tex);
+				(*Mid)->SetScalarParameterValue(TEXT("EmissiveStrength"), 2.5f);
+				(*Mid)->SetVectorParameterValue(TEXT("BaseColorFactor"), FLinearColor(0.15f, 0.15f, 0.15f, 1.f));
+				(*Mid)->SetScalarParameterValue(TEXT("Roughness"), 0.15f);
+			}
+		}
+	}
 }
 
 void ASkyLineAircraftPawn::UpdateSound()

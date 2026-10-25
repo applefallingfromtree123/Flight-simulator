@@ -11,7 +11,7 @@ import { ident, mul, fromRot3Loc, xform, translate, rotate, AC_TO_FG, offsetsMat
 const dirOf = f => path.posix.dirname(normalize(f));
 
 const SKIP_SUBMODEL = /(^|\/)(Human|Humans|Pilot|Pilots|Crew|Walker|Autopush|Pushback|Ground|GroundServices|Services|Stairs|Tug|Lights?)(\/|$)|pilot|walker|autopush|pushback|tug\.xml|stairs|catering|fuel-?truck|gpu\.xml|[-_]light\.xml|beacon|strobe|halo|procedural_light|tow-?bar|Effects\/lights?|landing-?light|light-?cone|light-?beam/i;
-const SKIP_OBJECT = /\.flare$|\.spot$|halo|glow|light[-_.]?cone|lightmap-only|^beacon|^strobe|^nav[-_]?light|landing[-_]?light[-_]?(beam|cone)|^shadow$|^shadow\./i;
+const SKIP_OBJECT = /screen[._-]?off|^off$|^display[._-]?off|\.flare$|\.spot$|halo|glow|light[-_.]?cone|lightmap-only|^beacon|^strobe|^nav[-_]?light|landing[-_]?light[-_]?(beam|cone)|^shadow$|^shadow\./i;
 
 export class Instance {
   constructor(file, parent, name) { this.file = file; this.parent = parent; this.name = name; this.kids = []; this.dir = dirOf(file); }

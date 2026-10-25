@@ -38,6 +38,13 @@ struct FSkyLineSpin
 	int32 Engine = 0;
 };
 
+/** Cockpit display surface (materials that show a live instrument render target). */
+struct FSkyLineScreen
+{
+	FString Kind;  // "PFD" | "ND" | "EICAS" | "MFD"
+	TArray<FName> Materials;
+};
+
 struct FSkyLineAircraftEntry
 {
 	FString Id;
@@ -58,6 +65,7 @@ struct FSkyLineAircraftEntry
 	FString DefaultLivery;
 	TArray<FSkyLinePoseGroup> Poses;
 	TArray<FSkyLineSpin> Spins;
+	TArray<FSkyLineScreen> Screens;
 
 	const FSkyLineLivery* FindLivery(const FString& LiveryId) const;
 };
