@@ -15,6 +15,8 @@ class ACesiumGeoreference;
 class UCameraComponent;
 class UCesiumGlobeAnchorComponent;
 class UStaticMeshComponent;
+class UAudioComponent;
+class USkyLineEngineSound;
 
 UCLASS()
 class SKYLINE_API ASkyLineAircraftPawn : public APawn
@@ -73,6 +75,10 @@ private:
 	TObjectPtr<UCameraComponent> Camera;
 	UPROPERTY(VisibleAnywhere)
 	TObjectPtr<UCesiumGlobeAnchorComponent> GlobeAnchor;
+	UPROPERTY(VisibleAnywhere)
+	TObjectPtr<UAudioComponent> Audio;
+	UPROPERTY(Transient)
+	TObjectPtr<USkyLineEngineSound> EngineSound;
 	/** Runtime meshes, materials and textures. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> ModelObjects;
@@ -141,6 +147,7 @@ private:
 	void UpdateCamera(float Dt);
 	void CreatePartComponents();
 	void UpdateParts(float Dt);
+	void UpdateSound();
 
 	void OnGear();
 	void OnFlapsUp();

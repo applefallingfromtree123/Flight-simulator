@@ -157,6 +157,15 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
   const instances = [];
   const geomCache = new Map();
 
+  // Scene graph mirroring FlightGear's: instance roots, AC objects, named animation groups. Transform
+  // animations attach to nodes (xforms[0] is closest to the geometry, i.e. the most recently declared).
+  const allNodes = [];
+  const newNode = (name, parent, inst, isInst) => {
+    const n = { name, parent, inst, isInst, xforms: [] };
+    allNodes.push(n);
+    return n;
+  };
+
   async function loadGeometry(file) {
     if (geomCache.has(file)) return geomCache.get(file);
     const buf = await fg.read(file);
@@ -193,6 +202,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     inst.texDir = tp ? normalize(`${inst.dir}/${tp}`) : inst.dir;
     // Model-local frame -> parent frame: this file's <offsets>, then the parent's <model><offsets>.
     inst.local = mul(offsetsMatrix(node.get('offsets')), localToParent);
+    inst.node = newNode(name, parent?.node ?? null, inst, true);
     parent?.kids.push(inst);
     instances.push(inst);
     const geomPath = node.str('path');
@@ -216,6 +226,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
         const si = new Instance(f, inst, subName);
         si.texDir = si.dir;
         si.local = subOffsets;
+        si.node = newNode(subName, inst.node, si, true);
         inst.kids.push(si);
         instances.push(si);
         await addGeometry(f, si);
@@ -232,40 +243,51 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     inst.geomFile = file;
     const base = g.fgSpace ? ident() : AC_TO_FG;
     const dir = dirOf(file);
-    const walk = (o, parentM, ancestors) => {
+    const walk = (o, parentM, ancestors, parentNode) => {
       const m = mul(fromRot3Loc(o.rot, o.loc), parentM);
       const names = o.name ? [...ancestors, o.name] : ancestors;
+      const n = newNode(o.name, parentNode, inst, false);
       if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) {
-        parts.push({ name: o.name, names, inst, obj: o, localM: m, matrix: null, materials: g.materials, dir,
-          texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null, anims: [] });
+        parts.push({ name: o.name, names, inst, node: n, obj: o, localM: m, matrix: null, materials: g.materials, dir,
+          texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null });
       }
-      for (const k of o.kids) walk(k, m, names);
+      for (const k of o.kids) walk(k, m, names, n);
     };
-    walk(g.root, base, []);
+    walk(g.root, base, [], inst.node);
   }
 
   const root = await loadXml(normalize(modelFile), null, '', ident(), null);
   for (const i of instances) if (!i.local) i.local = ident();
 
   // ---- animations ----
-  const match = (inst, names) => {
-    if (!names.length) return parts.filter(p => p.inst.isWithin(inst));
+  const findNodes = (inst, names) => {
+    if (!names.length) return [inst.node];
     const set = new Set(names);
-    return parts.filter(p => {
-      if (!p.inst.isWithin(inst)) return false;
-      if (p.names.some(n => set.has(n))) return true;
-      // sub-model names declared by `inst` or below
-      for (let i = p.inst; i && i !== inst; i = i.parent) if (i.name && set.has(i.name)) return true;
-      return false;
-    });
+    return allNodes.filter(n => n.name && set.has(n.name) && n.inst.isWithin(inst));
+  };
+  const match = (inst, names) => {
+    const t = new Set(findNodes(inst, names));
+    if (!t.size) return [];
+    return parts.filter(p => { for (let n = p.node; n; n = n.parent) if (t.has(n)) return true; return false; });
   };
   const slots = new Map();
   for (const { inst, node } of animations) {
     const type = node.str('type');
     const names = node.getChildren('object-name').map(n => n.value.trim()).filter(Boolean);
-    if (type === 'rotate' || type === 'translate' || type === 'spin') {
+    if ((!type || type === 'none') && node.has('name') && names.length) {
+      // named group: later animations can address these objects together
+      const targets = findNodes(inst, names);
+      if (targets.length) {
+        const g = newNode(node.str('name'), targets[0].parent, inst, false);
+        for (const t of targets) {
+          let cyc = false;
+          for (let a = g; a; a = a.parent) if (a === t) { cyc = true; break; }
+          if (!cyc) t.parent = g;
+        }
+      }
+    } else if (type === 'rotate' || type === 'translate' || type === 'spin') {
       const anim = parseTransformAnim(node, type, inst);
-      if (anim) for (const p of match(inst, names)) p.anims.push(anim);
+      if (anim) for (const t of findNodes(inst, names)) t.xforms.unshift(anim);
     } else if (type === 'select') {
       if (!evalCondition(node.get('condition'), state)) for (const p of match(inst, names)) p.visible = false;
     } else if (type === 'range') {
@@ -335,25 +357,25 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
   /** Part transform with the pose-group animations evaluated at the given values (other animations at rest). */
   const poseMatrix = (p, values) => {
     let M = p.localM;
-    for (let i = p.inst; i; i = i.parent) {
-      const list = p.anims.filter(a => a.inst === i);
-      for (let k = list.length - 1; k >= 0; k--) {
-        const a = list[k];
+    for (let n = p.node; n; n = n.parent) {
+      if (n.isInst) M = mul(M, n.inst.local);
+      for (const a of n.xforms) {
         if (a.spin || !a.group || values[a.group] === undefined) continue;
         if (a.cond && !evalCondition(a.cond, state)) continue;
         const gv = values[a.group];
         M = mul(M, animMatrix(a, /gear-down/.test(a.prop) ? (gv > 0.5 ? 1 : 0) : gv));
       }
-      M = mul(M, i.local);
     }
     return M;
   };
+  const animsOf = p => { const out = []; for (let n = p.node; n; n = n.parent) out.push(...n.xforms); return out; };
   const restValues = Object.fromEntries(POSE_GROUPS.map(g => [g.id, g.rest]));
   const spins = new Map();
   for (const p of parts) {
     p.matrix = poseMatrix(p, restValues);
-    p.group = p.anims.find(a => a.group === 'gear' && !a.spin)?.group ?? p.anims.find(a => a.group && !a.spin)?.group ?? null;
-    const s = p.anims.find(a => a.spin);
+    const anims = animsOf(p);
+    p.group = anims.find(a => a.group === 'gear' && !a.spin)?.group ?? anims.find(a => a.group && !a.spin)?.group ?? null;
+    const s = anims.find(a => a.spin);
     if (s && !p.interior) {
       if (!spins.has(s)) {
         let M = ident();

@@ -1,6 +1,8 @@
 #include "SkyLineAircraftPawn.h"
 
 #include "Camera/CameraComponent.h"
+#include "Components/AudioComponent.h"
+#include "SkyLineEngineSound.h"
 #include "CesiumGeoreference.h"
 #include "CesiumGlobeAnchorComponent.h"
 #include "Components/InputComponent.h"
@@ -55,6 +57,11 @@ ASkyLineAircraftPawn::ASkyLineAircraftPawn()
 	Camera->bUsePawnControlRotation = false;
 
 	GlobeAnchor = CreateDefaultSubobject<UCesiumGlobeAnchorComponent>(TEXT("GlobeAnchor"));
+
+	Audio = CreateDefaultSubobject<UAudioComponent>(TEXT("Audio"));
+	Audio->SetupAttachment(Body);
+	Audio->bAutoActivate = false;
+	Audio->bAllowSpatialization = false;
 }
 
 void ASkyLineAircraftPawn::BeginPlay()
@@ -111,6 +118,15 @@ bool ASkyLineAircraftPawn::SetupAircraft(const FSkyLineLaunch& Launch, FString& 
 	OrbitDistance = FMath::Max(1500.0, Entry->Bounds.GetSize().GetMax() * 1.6);
 
 	ApplyLivery(Launch.LiveryId.IsEmpty() ? Entry->DefaultLivery : Launch.LiveryId);
+
+	EngineSound = NewObject<USkyLineEngineSound>(this);
+	const EngineType Et = Sim->Def.Eng.T;
+	EngineSound->SetKind(Sim->IsRotor() ? ESkyLineSoundKind::Helicopter
+		: Et == EngineType::Prop ? ESkyLineSoundKind::Piston
+		: Et == EngineType::TProp ? ESkyLineSoundKind::Turboprop
+		: Et == EngineType::None ? ESkyLineSoundKind::Glider : ESkyLineSoundKind::Jet);
+	Audio->SetSound(EngineSound);
+	Audio->Play();
 	return true;
 }
 
@@ -439,6 +455,33 @@ void ASkyLineAircraftPawn::Tick(float DeltaSeconds)
 	PlaceOnGlobe();
 	UpdateParts(DeltaSeconds);
 	UpdateCamera(DeltaSeconds);
+	UpdateSound();
+}
+
+void ASkyLineAircraftPawn::UpdateSound()
+{
+	if (!EngineSound || !Sim)
+	{
+		return;
+	}
+	double Speed = 0, Power = 0;
+	const int32 N = static_cast<int32>(Sim->Engines.size());
+	for (const Engine& E : Sim->Engines)
+	{
+		switch (E.Def.T)
+		{
+			case EngineType::Prop: Speed += E.Rpm / 2700.0; Power += E.Power / (E.Def.P * 1000.0); break;
+			case EngineType::TProp:
+			case EngineType::Shaft: Speed += E.Ng / 100.0; Power += E.Torque / 100.0; break;
+			default: Speed += E.N1 / 100.0; Power += E.Running ? E.Spool : 0.0; break;
+		}
+	}
+	if (N > 0) { Speed /= N; Power /= N; }
+	if (Sim->IsRotor()) { Speed = Sim->RotorRpm; Power = Sim->Collective; }
+	const double Rumble = Sim->OnGround ? FMath::Clamp(Sim->Gs / 40.0, 0.0, 1.0) : 0.0;
+	const bool bPausedNow = bSimPaused || bWaitingForTerrain;
+	EngineSound->SetState(bPausedNow ? 0.f : static_cast<float>(Speed), static_cast<float>(Power), bPausedNow ? 0.f : static_cast<float>(Sim->Tas),
+		bPausedNow ? 0.f : static_cast<float>(Rumble), !bPausedNow && Sim->Stall > 0.3 && !Sim->OnGround, View == ESkyLineView::Cockpit);
 }
 
 void ASkyLineAircraftPawn::CreatePartComponents()
