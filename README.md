@@ -1,7 +1,7 @@
 # SkyLine Flight Simulator (Unreal Engine 5)
 
 실제 지구 위에서, 실제 기체 모델과 **실제 항공사 도색**으로, 직접 만든 6자유도 비행역학 엔진을 타고 나는 PC용 비행 시뮬레이터입니다.
-기존 웹(브라우저) 버전은 버리고 Unreal Engine 5로 새로 만들었습니다.
+Unreal Engine 5(PC) 버전입니다. **아이패드에서는 실행되지 않으므로**, 기존 웹 버전(`src/`, https://applefallingfromtree123.github.io/Flight-simulator/)도 그대로 유지합니다.
 
 | 계층 | 구현 |
 |---|---|
