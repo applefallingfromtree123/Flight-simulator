@@ -76,6 +76,27 @@ private:
 	/** Runtime meshes, materials and textures. */
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<UObject>> ModelObjects;
+	/** Gear/flap pose meshes and spinning propellers/rotors. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> PartComponents;
+
+	struct FPoseRuntime
+	{
+		FString Group;
+		TArray<double> Values;
+		TArray<UStaticMeshComponent*> Components;
+		int32 Shown = -1;
+	};
+	struct FSpinRuntime
+	{
+		UStaticMeshComponent* Component = nullptr;
+		FVector Axis = FVector::ForwardVector;
+		FString Kind;
+		int32 Engine = 0;
+		double AngleDeg = 0;
+	};
+	TArray<FPoseRuntime> Poses;
+	TArray<FSpinRuntime> Spins;
 
 	FSkyLineAircraftModel Model;
 	const FSkyLineAircraftEntry* Entry = nullptr;
@@ -118,6 +139,8 @@ private:
 	void PositionAtStart();
 	void PollInput(float Dt);
 	void UpdateCamera(float Dt);
+	void CreatePartComponents();
+	void UpdateParts(float Dt);
 
 	void OnGear();
 	void OnFlapsUp();

@@ -107,6 +107,7 @@ bool ASkyLineAircraftPawn::SetupAircraft(const FSkyLineLaunch& Launch, FString& 
 	MeshOffset = FVector(-CgX, 0, -Sim->Aero.CgHeight * 100.0 - Entry->GroundZ);
 	ExteriorMesh->SetRelativeLocation(MeshOffset);
 	InteriorMesh->SetRelativeLocation(MeshOffset);
+	CreatePartComponents();
 	OrbitDistance = FMath::Max(1500.0, Entry->Bounds.GetSize().GetMax() * 1.6);
 
 	ApplyLivery(Launch.LiveryId.IsEmpty() ? Entry->DefaultLivery : Launch.LiveryId);
@@ -436,7 +437,100 @@ void ASkyLineAircraftPawn::Tick(float DeltaSeconds)
 		}
 	}
 	PlaceOnGlobe();
+	UpdateParts(DeltaSeconds);
 	UpdateCamera(DeltaSeconds);
+}
+
+void ASkyLineAircraftPawn::CreatePartComponents()
+{
+	for (UStaticMeshComponent* C : PartComponents)
+	{
+		if (C) C->DestroyComponent();
+	}
+	PartComponents.Reset();
+	Poses.Reset();
+	Spins.Reset();
+	auto Make = [this](UStaticMesh* Mesh, const FVector& RelLocation) {
+		UStaticMeshComponent* C = NewObject<UStaticMeshComponent>(this);
+		C->SetupAttachment(Body);
+		C->SetStaticMesh(Mesh);
+		C->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+		C->SetGenerateOverlapEvents(false);
+		C->SetRelativeLocation(RelLocation);
+		C->RegisterComponent();
+		PartComponents.Add(C);
+		return C;
+	};
+	for (const FSkyLinePoseGroup& G : Entry->Poses)
+	{
+		FPoseRuntime P;
+		P.Group = G.Group;
+		P.Values = G.Values;
+		for (const FString& Node : G.Nodes)
+		{
+			UStaticMesh** Mesh = Model.Nodes.Find(Node);
+			UStaticMeshComponent* C = Mesh ? Make(*Mesh, MeshOffset) : nullptr;
+			if (C) C->SetVisibility(false);
+			P.Components.Add(C);
+		}
+		Poses.Add(MoveTemp(P));
+	}
+	for (const FSkyLineSpin& S : Entry->Spins)
+	{
+		if (UStaticMesh** Mesh = Model.Nodes.Find(S.Node))
+		{
+			FSpinRuntime R;
+			R.Component = Make(*Mesh, MeshOffset + S.Pivot);
+			R.Axis = S.Axis;
+			R.Kind = S.Kind;
+			R.Engine = S.Engine;
+			Spins.Add(R);
+		}
+	}
+}
+
+void ASkyLineAircraftPawn::UpdateParts(float Dt)
+{
+	if (!Sim)
+	{
+		return;
+	}
+	const double MaxFlap = FMath::Max(1.0, Sim->Aero.Flaps.back().Deg);
+	for (FPoseRuntime& P : Poses)
+	{
+		const double Value = P.Group == TEXT("gear") ? Sim->GearPos : P.Group == TEXT("flaps") ? Sim->FlapPos / MaxFlap : 0.0;
+		int32 Best = 0;
+		for (int32 I = 1; I < P.Values.Num(); I++)
+		{
+			if (FMath::Abs(P.Values[I] - Value) < FMath::Abs(P.Values[Best] - Value)) Best = I;
+		}
+		if (Best != P.Shown)
+		{
+			for (int32 I = 0; I < P.Components.Num(); I++)
+			{
+				if (P.Components[I]) P.Components[I]->SetVisibility(I == Best);
+			}
+			P.Shown = Best;
+		}
+	}
+	for (FSpinRuntime& S : Spins)
+	{
+		// Visual rates (deg/s) kept below the frame-rate strobe limit.
+		double Rate = 0;
+		if (S.Kind == TEXT("rotor")) Rate = 1100.0 * Sim->RotorRpm;
+		else if (S.Kind == TEXT("tail")) Rate = 2600.0 * Sim->RotorRpm;
+		else if (!Sim->Engines.empty())
+		{
+			const Engine& E = Sim->Engines[FMath::Clamp(S.Engine, 0, static_cast<int32>(Sim->Engines.size()) - 1)];
+			const double Frac = E.Def.T == EngineType::Prop ? E.Rpm / 2700.0 : (E.Def.T == EngineType::TProp ? E.Np / 100.0 : E.N1 / 100.0);
+			Rate = 1500.0 * FMath::Clamp(Frac, 0.0, 1.2);
+		}
+		S.AngleDeg = FMath::Fmod(S.AngleDeg + Rate * Dt, 360.0);
+		if (S.Component)
+		{
+			S.Component->SetRelativeRotation(FQuat(S.Axis, FMath::DegreesToRadians(S.AngleDeg)));
+		}
+	}
 }
 
 void ASkyLineAircraftPawn::ShowMessage(const FString& Msg)

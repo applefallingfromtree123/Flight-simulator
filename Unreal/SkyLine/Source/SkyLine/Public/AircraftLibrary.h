@@ -20,6 +20,24 @@ struct FSkyLineLiverySlot
 	TArray<FName> Materials;
 };
 
+/** Animated part group exported as discrete poses (gear retraction, flap extension). */
+struct FSkyLinePoseGroup
+{
+	FString Group;            // "gear" | "flaps"
+	TArray<double> Values;    // normalised value of each pose
+	TArray<FString> Nodes;    // mesh node per pose
+};
+
+/** A propeller or rotor that spins about its own pivot. */
+struct FSkyLineSpin
+{
+	FString Node;
+	FVector Pivot = FVector::ZeroVector;  // Unreal space, cm (model origin)
+	FVector Axis = FVector::ForwardVector;
+	FString Kind;                         // "prop" | "rotor" | "tail"
+	int32 Engine = 0;
+};
+
 struct FSkyLineAircraftEntry
 {
 	FString Id;
@@ -38,6 +56,8 @@ struct FSkyLineAircraftEntry
 	TArray<FSkyLineLiverySlot> Slots;
 	TArray<FSkyLineLivery> Liveries;
 	FString DefaultLivery;
+	TArray<FSkyLinePoseGroup> Poses;
+	TArray<FSkyLineSpin> Spins;
 
 	const FSkyLineLivery* FindLivery(const FString& LiveryId) const;
 };

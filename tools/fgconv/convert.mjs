@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { FGFS, normalize, pool } from './lib/fgfs.mjs';
 import { readProps, PNode } from './lib/props.mjs';
-import { loadModel, makeState } from './lib/model.mjs';
+import { loadModel, makeState, POSE_GROUPS } from './lib/model.mjs';
 import { buildBuckets } from './lib/mesh.mjs';
 import { GlbWriter } from './lib/gltf.mjs';
 import { decode, sniff, encodePng, opaqueCopy } from './lib/image.mjs';
@@ -147,12 +147,48 @@ async function convert(entry) {
     if (!matDefs.has(id)) matDefs.set(id, { id, acm, tex, twoSided, glass, slot: p.slot, effect: p.effect, interior: p.interior, alpha: p.alpha });
     return { id, interior: p.interior };
   };
-  const { buckets, tris } = buildBuckets(model.parts, materialKeyOf);
-  console.log(`  ${tris.toLocaleString()} triangles in ${buckets.length} material groups`);
+  // Static exterior/interior, plus animated gear/flap poses and spinning props/rotors as separate nodes.
+  const isStatic = p => p.interior || (!p.group && !p.spin);
+  const base = buildBuckets(model.parts.filter(isStatic), materialKeyOf);
+  let tris = base.tris;
+  const meshes = [];  // { name, buckets, translation? }
+  meshes.push({ name: 'Exterior', buckets: base.buckets.filter(b => !b.interior) });
+  meshes.push({ name: 'Interior', buckets: base.buckets.filter(b => b.interior) });
+  const poses = [];
+  for (const g of POSE_GROUPS) {
+    const gp = model.parts.filter(p => !p.interior && !p.spin && p.group === g.id);
+    if (!gp.length) continue;
+    const nodes = [];
+    for (const [k, v] of g.values.entries()) {
+      for (const p of gp) p.matrix = model.poseMatrix(p, { [g.id]: v });
+      const r = buildBuckets(gp, materialKeyOf);
+      if (v === g.rest) tris += r.tris;
+      const name = `Pose_${g.id}_${k}`;
+      meshes.push({ name, buckets: r.buckets, pose: v === g.rest });
+      nodes.push(name);
+    }
+    for (const p of gp) p.matrix = model.poseMatrix(p, { [g.id]: g.rest });
+    poses.push({ group: g.id, values: g.values, nodes, objects: gp.length });
+  }
+  const spins = [];
+  for (const s of model.spins) {
+    const sp = model.parts.filter(p => p.spin === s && !p.interior);
+    if (!sp.length) continue;
+    const r = buildBuckets(sp, materialKeyOf);
+    tris += r.tris;
+    const pivot = [-s.pivot[1], s.pivot[2], -s.pivot[0]];  // FG -> glTF
+    for (const b of r.buckets) for (let i = 0; i < b.pos.length; i++) b.pos[i] -= pivot[i % 3];
+    const name = `Spin_${spins.length}`;
+    meshes.push({ name, buckets: r.buckets, translation: pivot });
+    spins.push({ node: name, pivot, axis: [-s.axis[1], s.axis[2], -s.axis[0]], kind: s.kind, engine: s.engine });
+  }
+  const buckets = meshes.flatMap(m => m.buckets);
+  console.log(`  ${tris.toLocaleString()} triangles · ${poses.map(p => `${p.group} ${p.objects} parts`).join(', ') || 'no poses'} · ${spins.length} spinning parts`);
 
   const matIndex = new Map();
   const slotMaterials = new Map(model.slots.map(s => [s.index, []]));
   for (const b of buckets) {
+    if (matIndex.has(b.id)) continue;
     const d = matDefs.get(b.id);
     const name = `${d.slot ? `LIVERY${d.slot.index}_` : d.glass ? 'GLASS_' : ''}${(d.acm?.name || 'mat').replace(/[^\w]/g, '')}_${matIndex.size}`;
     const opaque = !!d.slot || d.effect === 'paint';
@@ -178,19 +214,25 @@ async function convert(entry) {
   }
 
   // ---------- meshes ----------
-  const nodeFor = (interior, label) => {
-    const prims = buckets.filter(b => b.interior === interior).map(b => ({
+  for (const m of meshes) {
+    const prims = m.buckets.map(b => ({
       pos: new Float32Array(b.pos), nrm: new Float32Array(b.nrm), uv: new Float32Array(b.uv),
       idx: new Uint32Array(b.idx), material: matIndex.get(b.id),
     }));
-    if (prims.length) gw.node({ name: label, mesh: gw.mesh(label, prims) });
-  };
-  nodeFor(false, 'Exterior');
-  nodeFor(true, 'Interior');
+    if (prims.length) gw.node({ name: m.name, mesh: gw.mesh(m.name, prims), ...(m.translation ? { translation: m.translation } : {}) });
+  }
 
   // bounds (exterior only) in glTF space
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
-  for (const b of buckets) if (!b.interior) for (let i = 0; i < b.pos.length; i++) { const c = i % 3; if (b.pos[i] < min[c]) min[c] = b.pos[i]; if (b.pos[i] > max[c]) max[c] = b.pos[i]; }
+  for (const m of meshes) {
+    if (m.name === 'Interior' || (m.name.startsWith('Pose_') && !m.pose)) continue;
+    const t = m.translation ?? [0, 0, 0];
+    for (const b of m.buckets) for (let i = 0; i < b.pos.length; i++) {
+      const c = i % 3, v = b.pos[i] + t[c];
+      if (v < min[c]) min[c] = v;
+      if (v > max[c]) max[c] = v;
+    }
+  }
 
   const outDir = path.join(OUT, entry.id);
   fs.rmSync(outDir, { recursive: true, force: true });
@@ -224,6 +266,7 @@ async function convert(entry) {
     bounds: { min, max }, groundY: min[1],
     eye: eye ? [-eye.num('x-offset-m'), eye.num('y-offset-m'), -eye.num('z-offset-m')] : null,
     slots: model.slots.map(s => ({ index: s.index, property: s.key, materials: slotMaterials.get(s.index) })),
+    poses, spins,
     defaultLivery: def?.id ?? null,
     liveries: livOut,
   };

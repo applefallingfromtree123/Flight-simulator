@@ -124,6 +124,41 @@ void FAircraftLibrary::Rescan()
 			}
 			E.Liveries.Add(MoveTemp(Liv));
 		}
+		const TArray<TSharedPtr<FJsonValue>>* PoseArr = nullptr;
+		if (Json->TryGetArrayField(TEXT("poses"), PoseArr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *PoseArr)
+			{
+				const TSharedPtr<FJsonObject> P = V->AsObject();
+				FSkyLinePoseGroup G;
+				G.Group = P->GetStringField(TEXT("group"));
+				for (const TSharedPtr<FJsonValue>& X : P->GetArrayField(TEXT("values"))) G.Values.Add(X->AsNumber());
+				for (const TSharedPtr<FJsonValue>& X : P->GetArrayField(TEXT("nodes"))) G.Nodes.Add(X->AsString());
+				if (G.Values.Num() == G.Nodes.Num() && G.Nodes.Num() > 0)
+				{
+					E.Poses.Add(MoveTemp(G));
+				}
+			}
+		}
+		const TArray<TSharedPtr<FJsonValue>>* SpinArr = nullptr;
+		if (Json->TryGetArrayField(TEXT("spins"), SpinArr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *SpinArr)
+			{
+				const TSharedPtr<FJsonObject> P = V->AsObject();
+				FSkyLineSpin S;
+				S.Node = P->GetStringField(TEXT("node"));
+				bool bPivot = false, bAxis = false;
+				S.Pivot = ReadGltfVector(P, TEXT("pivot"), bPivot);
+				S.Axis = ReadGltfVector(P, TEXT("axis"), bAxis).GetSafeNormal();
+				S.Kind = P->GetStringField(TEXT("kind"));
+				S.Engine = static_cast<int32>(P->GetNumberField(TEXT("engine")));
+				if (bPivot && bAxis && !S.Axis.IsNearlyZero())
+				{
+					E.Spins.Add(MoveTemp(S));
+				}
+			}
+		}
 		if (!skyline::FindAircraft(TCHAR_TO_UTF8(*E.FdmId)))
 		{
 			UE_LOG(LogSkyLine, Warning, TEXT("%s: flight model '%s' not in the database, using defaults"), *E.Id, *E.FdmId);

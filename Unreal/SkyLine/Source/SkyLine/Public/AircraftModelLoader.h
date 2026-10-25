@@ -13,6 +13,8 @@ struct FSkyLineAircraftModel
 {
 	UStaticMesh* Exterior = nullptr;
 	UStaticMesh* Interior = nullptr;
+	/** Pose and spinner meshes by glTF node name (Pose_gear_0, Spin_0, ...). */
+	TMap<FString, UStaticMesh*> Nodes;
 	/** Every material by its glTF name (livery slots reference these). */
 	TMap<FName, UMaterialInstanceDynamic*> Materials;
 	/** Keeps runtime-created objects alive while the model is in use. */

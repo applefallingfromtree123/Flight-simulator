@@ -459,9 +459,13 @@ bool FAircraftModelLoader::Load(const FSkyLineAircraftEntry& Entry, UObject* Out
 		{
 			Out.Interior = Mesh;
 		}
-		else
+		else if (NodeName == TEXT("Exterior"))
 		{
 			Out.Exterior = Mesh;
+		}
+		else
+		{
+			Out.Nodes.Add(NodeName, Mesh);
 		}
 	}
 	if (!Out.Exterior)

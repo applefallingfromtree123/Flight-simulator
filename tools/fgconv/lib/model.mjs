@@ -6,7 +6,7 @@ import { readProps, PNode } from './props.mjs';
 import { normalize } from './fgfs.mjs';
 import { parseAc } from './ac3d.mjs';
 import { parse3ds } from './tds.mjs';
-import { ident, mul, fromRot3Loc, xform, AC_TO_FG, offsetsMatrix } from './math.mjs';
+import { ident, mul, fromRot3Loc, xform, translate, rotate, AC_TO_FG, offsetsMatrix } from './math.mjs';
 
 const dirOf = f => path.posix.dirname(normalize(f));
 
@@ -23,6 +23,68 @@ export class Instance {
  * Property state used to evaluate <condition> blocks. Starts from the -set.xml tree like FlightGear does, with
  * the aircraft parked: gear down, doors shut, ground services off, viewed from the cockpit.
  */
+
+/**
+ * Animated part groups exported as discrete poses (Unreal shows the pose nearest to the live value).
+ * rest = value used for the static model.
+ */
+export const POSE_GROUPS = [
+  { id: 'gear', rx: /gear\/gear(\[\d+\])?\/position-norm|controls\/gear\/gear-down|gear\/gear(\[\d+\])?\/position(?![\w-])/i, values: [0, 1 / 3, 2 / 3, 1], rest: 1 },
+  { id: 'flaps', rx: /flap-pos-norm|surface-positions\/[\w-]*(flap|slat)|controls\/flight\/(flaps|slats)/i, values: [0, 0.25, 0.5, 0.75, 1], rest: 0 },
+];
+// Propellers and rotors become separate meshes that Unreal spins.
+const SPIN_PROP = /rotors?\/(main|tail)|propeller|\brpm\b|engines\/engine(\[\d+\])?\/(n1|n2|rpm)|blade(\[\d+\])?\/position|prop-?pos/i;
+// FlightGear rotate animations turn right-handed about their axis (simgear SGRotateTransform).
+const ROT_SIGN = 1;
+
+function parseTransformAnim(node, type, inst) {
+  const prop = node.str('property');
+  if (!prop) return null;
+  let center = node.has('center') ? [node.num('center/x-m'), node.num('center/y-m'), node.num('center/z-m')] : [0, 0, 0];
+  let axis = null;
+  const ax = node.get('axis');
+  if (ax?.has('x1-m')) {
+    const p1 = [ax.num('x1-m'), ax.num('y1-m'), ax.num('z1-m')], p2 = [ax.num('x2-m'), ax.num('y2-m'), ax.num('z2-m')];
+    axis = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    if (!node.has('center')) center = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2];
+  } else if (ax) axis = [ax.num('x'), ax.num('y'), ax.num('z')];
+  if (!axis || Math.hypot(...axis) < 1e-9) return null;
+  const suf = type === 'translate' ? '-m' : '-deg';
+  const interp = node.get('interpolation')?.getChildren('entry').map(e => [e.num('ind'), e.num('dep')]) ?? null;
+  return {
+    type, inst, prop, center, axis, interp: interp?.length ? interp : null,
+    factor: node.has('factor') ? node.num('factor') : 1, offset: node.num('offset' + suf),
+    min: node.has('min' + suf) ? node.num('min' + suf) : -Infinity, max: node.has('max' + suf) ? node.num('max' + suf) : Infinity,
+    cond: node.get('condition'),
+    group: POSE_GROUPS.find(g => g.rx.test(prop))?.id ?? null,
+    spin: (type === 'spin' || type === 'rotate') && SPIN_PROP.test(prop),
+  };
+}
+
+function animValue(a, v) {
+  let x;
+  if (a.interp) {
+    const t = a.interp;
+    if (v <= t[0][0]) x = t[0][1];
+    else if (v >= t[t.length - 1][0]) x = t[t.length - 1][1];
+    else {
+      let i = 1;
+      while (t[i][0] < v) i++;
+      const f = (v - t[i - 1][0]) / ((t[i][0] - t[i - 1][0]) || 1);
+      x = t[i - 1][1] + (t[i][1] - t[i - 1][1]) * f;
+    }
+  } else x = v * a.factor + a.offset;
+  return Math.min(a.max, Math.max(a.min, x));
+}
+
+function animMatrix(a, v) {
+  const val = animValue(a, v);
+  const l = Math.hypot(...a.axis);
+  if (a.type === 'translate') return translate(a.axis[0] / l * val, a.axis[1] / l * val, a.axis[2] / l * val);
+  const [cx, cy, cz] = a.center;
+  return mul(mul(translate(-cx, -cy, -cz), rotate(ROT_SIGN * val, a.axis[0], a.axis[1], a.axis[2])), translate(cx, cy, cz));
+}
+
 export function makeState(setTree) {
   const overrides = new Map(Object.entries({
     'gear/gear/position-norm': 1, 'gear/gear[1]/position-norm': 1, 'gear/gear[2]/position-norm': 1, 'gear/gear[3]/position-norm': 1,
@@ -120,7 +182,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     return hit ? `${dir}/${hit}` : null;
   }
 
-  async function loadXml(file, parent, name, matrix, overlay) {
+  async function loadXml(file, parent, name, localToParent, overlay) {
     const node = new PNode('PropertyList');
     await readProps(fg, file, node, { aircraftDir });
     if (overlay) mergeOverlay(node, overlay);
@@ -129,14 +191,15 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     // <texture-path> adds a texture search directory (relative to the model XML) for the geometry and animations.
     const tp = node.str('texture-path');
     inst.texDir = tp ? normalize(`${inst.dir}/${tp}`) : inst.dir;
+    // Model-local frame -> parent frame: this file's <offsets>, then the parent's <model><offsets>.
+    inst.local = mul(offsetsMatrix(node.get('offsets')), localToParent);
     parent?.kids.push(inst);
     instances.push(inst);
-    const m = mul(offsetsMatrix(node.get('offsets')), matrix);
     const geomPath = node.str('path');
     if (geomPath) {
       const f = await resolve(geomPath, inst.dir);
-      if (f && /\.xml$/i.test(f)) await loadXml(f, inst, '', m, null);
-      else if (f) await addGeometry(f, inst, m);
+      if (f && /\.xml$/i.test(f)) await loadXml(f, inst, '', ident(), null);
+      else if (f) await addGeometry(f, inst);
       else log(`  ? geometry not found: ${geomPath} (from ${file})`);
     }
     for (const sub of node.getChildren('model')) {
@@ -146,12 +209,16 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       if (SKIP_SUBMODEL.test(p) || SKIP_SUBMODEL.test(sub.str('name'))) continue;
       const f = await resolve(p, inst.dir);
       if (!f) { log(`  ? sub-model not found: ${p}`); continue; }
-      const sm = mul(offsetsMatrix(sub.get('offsets')), m);
+      const subOffsets = offsetsMatrix(sub.get('offsets'));
       const subName = sub.str('name');
-      if (/\.xml$/i.test(f)) await loadXml(f, inst, subName, sm, sub.get('overlay'));
+      if (/\.xml$/i.test(f)) await loadXml(f, inst, subName, subOffsets, sub.get('overlay'));
       else {
-        const si = new Instance(f, inst, subName); si.texDir = si.dir; inst.kids.push(si); instances.push(si);
-        await addGeometry(f, si, sm);
+        const si = new Instance(f, inst, subName);
+        si.texDir = si.dir;
+        si.local = subOffsets;
+        inst.kids.push(si);
+        instances.push(si);
+        await addGeometry(f, si);
       }
     }
     for (const a of node.getChildren('animation')) animations.push({ inst, node: a });
@@ -159,23 +226,26 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     return inst;
   }
 
-  async function addGeometry(file, inst, matrix) {
+  async function addGeometry(file, inst) {
     const g = await loadGeometry(file);
     if (!g) return;
     inst.geomFile = file;
-    const base = g.fgSpace ? matrix : mul(AC_TO_FG, matrix);
+    const base = g.fgSpace ? ident() : AC_TO_FG;
     const dir = dirOf(file);
     const walk = (o, parentM, ancestors) => {
-      const local = fromRot3Loc(o.rot, o.loc);
-      const m = mul(local, parentM);
+      const m = mul(fromRot3Loc(o.rot, o.loc), parentM);
       const names = o.name ? [...ancestors, o.name] : ancestors;
-      if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) parts.push({ name: o.name, names, inst, obj: o, matrix: m, materials: g.materials, dir, texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null });
+      if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) {
+        parts.push({ name: o.name, names, inst, obj: o, localM: m, matrix: null, materials: g.materials, dir,
+          texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null, anims: [] });
+      }
       for (const k of o.kids) walk(k, m, names);
     };
     walk(g.root, base, []);
   }
 
   const root = await loadXml(normalize(modelFile), null, '', ident(), null);
+  for (const i of instances) if (!i.local) i.local = ident();
 
   // ---- animations ----
   const match = (inst, names) => {
@@ -193,7 +263,10 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
   for (const { inst, node } of animations) {
     const type = node.str('type');
     const names = node.getChildren('object-name').map(n => n.value.trim()).filter(Boolean);
-    if (type === 'select') {
+    if (type === 'rotate' || type === 'translate' || type === 'spin') {
+      const anim = parseTransformAnim(node, type, inst);
+      if (anim) for (const p of match(inst, names)) p.anims.push(anim);
+    } else if (type === 'select') {
       if (!evalCondition(node.get('condition'), state)) for (const p of match(inst, names)) p.visible = false;
     } else if (type === 'range') {
       // LOD: anything that only shows from some distance away is a low-detail duplicate.
@@ -257,7 +330,44 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     p.interior = p.inst.chain().some(i => i.parent && (interiorRx.test(path.posix.basename(i.file)) || interiorRx.test(i.name)));
     if (p.interior && !includeInterior) p.visible = false;
   }
-  return { root, parts: parts.filter(p => p.visible), slots: [...slots.values()], instances, resolve };
+
+  // ---- animated poses and spinning parts ----
+  /** Part transform with the pose-group animations evaluated at the given values (other animations at rest). */
+  const poseMatrix = (p, values) => {
+    let M = p.localM;
+    for (let i = p.inst; i; i = i.parent) {
+      const list = p.anims.filter(a => a.inst === i);
+      for (let k = list.length - 1; k >= 0; k--) {
+        const a = list[k];
+        if (a.spin || !a.group || values[a.group] === undefined) continue;
+        if (a.cond && !evalCondition(a.cond, state)) continue;
+        const gv = values[a.group];
+        M = mul(M, animMatrix(a, /gear-down/.test(a.prop) ? (gv > 0.5 ? 1 : 0) : gv));
+      }
+      M = mul(M, i.local);
+    }
+    return M;
+  };
+  const restValues = Object.fromEntries(POSE_GROUPS.map(g => [g.id, g.rest]));
+  const spins = new Map();
+  for (const p of parts) {
+    p.matrix = poseMatrix(p, restValues);
+    p.group = p.anims.find(a => a.group === 'gear' && !a.spin)?.group ?? p.anims.find(a => a.group && !a.spin)?.group ?? null;
+    const s = p.anims.find(a => a.spin);
+    if (s && !p.interior) {
+      if (!spins.has(s)) {
+        let M = ident();
+        for (let i = s.inst; i; i = i.parent) M = mul(M, i.local);
+        const pivot = xform(M, ...s.center), o = xform(M, 0, 0, 0), e = xform(M, ...s.axis);
+        const d = [e[0] - o[0], e[1] - o[1], e[2] - o[2]], l = Math.hypot(...d) || 1;
+        const kind = /tail/i.test(s.prop) ? 'tail' : /rotor/i.test(s.prop) ? 'rotor' : 'prop';
+        const engine = +(/engine\[(\d+)\]/.exec(s.prop)?.[1] ?? /propeller\[(\d+)\]/.exec(s.prop)?.[1] ?? 0);
+        spins.set(s, { index: spins.size, pivot, axis: d.map(x => x / l), kind, engine, prop: s.prop });
+      }
+      p.spin = spins.get(s);
+    }
+  }
+  return { root, parts: parts.filter(p => p.visible), slots: [...slots.values()], instances, resolve, poseMatrix, spins: [...spins.values()] };
 }
 
 function mergeOverlay(node, overlay) {
