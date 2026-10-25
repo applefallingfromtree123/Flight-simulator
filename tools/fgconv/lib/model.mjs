@@ -10,7 +10,7 @@ import { ident, mul, fromRot3Loc, xform, AC_TO_FG, offsetsMatrix } from './math.
 
 const dirOf = f => path.posix.dirname(normalize(f));
 
-const SKIP_SUBMODEL = /(^|\/)(Human|Humans|Pilot|Pilots|Crew|Walker|Autopush|Pushback|Ground|GroundServices|Services|Stairs|Tug|Lights?)(\/|$)|pilot|walker|autopush|pushback|tug\.xml|stairs|catering|fuel-?truck|gpu\.xml|[-_]light\.xml|beacon|strobe|halo|procedural_light|tow-?bar/i;
+const SKIP_SUBMODEL = /(^|\/)(Human|Humans|Pilot|Pilots|Crew|Walker|Autopush|Pushback|Ground|GroundServices|Services|Stairs|Tug|Lights?)(\/|$)|pilot|walker|autopush|pushback|tug\.xml|stairs|catering|fuel-?truck|gpu\.xml|[-_]light\.xml|beacon|strobe|halo|procedural_light|tow-?bar|Effects\/lights?|landing-?light|light-?cone|light-?beam/i;
 const SKIP_OBJECT = /\.flare$|\.spot$|halo|glow|light[-_.]?cone|lightmap-only|^beacon|^strobe|^nav[-_]?light|landing[-_]?light[-_]?(beam|cone)|^shadow$|^shadow\./i;
 
 export class Instance {
@@ -126,6 +126,9 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     if (overlay) mergeOverlay(node, overlay);
     const inst = new Instance(file, parent, name);
     inst.props = node;
+    // <texture-path> adds a texture search directory (relative to the model XML) for the geometry and animations.
+    const tp = node.str('texture-path');
+    inst.texDir = tp ? normalize(`${inst.dir}/${tp}`) : inst.dir;
     parent?.kids.push(inst);
     instances.push(inst);
     const m = mul(offsetsMatrix(node.get('offsets')), matrix);
@@ -147,7 +150,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       const subName = sub.str('name');
       if (/\.xml$/i.test(f)) await loadXml(f, inst, subName, sm, sub.get('overlay'));
       else {
-        const si = new Instance(f, inst, subName); inst.kids.push(si); instances.push(si);
+        const si = new Instance(f, inst, subName); si.texDir = si.dir; inst.kids.push(si); instances.push(si);
         await addGeometry(f, si, sm);
       }
     }
@@ -166,7 +169,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       const local = fromRot3Loc(o.rot, o.loc);
       const m = mul(local, parentM);
       const names = o.name ? [...ancestors, o.name] : ancestors;
-      if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) parts.push({ name: o.name, names, inst, obj: o, matrix: m, materials: g.materials, dir, visible: true, slot: null, texOverride: null, effect: null });
+      if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) parts.push({ name: o.name, names, inst, obj: o, matrix: m, materials: g.materials, dir, texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null });
       for (const k of o.kids) walk(k, m, names);
     };
     walk(g.root, base, []);
@@ -203,17 +206,40 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       if (texProp) {
         const key = base ? `${base}/${texProp}` : texProp;
         let slot = slots.get(key);
-        if (!slot) { slot = { key, index: slots.size, defaultTex: null, dir: inst.dir }; slots.set(key, slot); }
-        if (tex && !slot.defaultTex) slot.defaultTex = await resolve(tex, inst.dir);
+        if (!slot) { slot = { key, index: slots.size, defaultTex: null, dir: inst.texDir }; slots.set(key, slot); }
+        if (tex && !slot.defaultTex) slot.defaultTex = (await resolve(tex, inst.texDir)) ?? (await resolve(tex, inst.dir));
         for (const p of match(inst, names)) p.slot = slot;
       } else if (tex) {
-        const f = await resolve(tex, inst.dir);
+        const f = (await resolve(tex, inst.texDir)) ?? (await resolve(tex, inst.dir));
         if (f) for (const p of match(inst, names)) p.texOverride = f;
       }
       const alpha = node.get('transparency/alpha');
       if (alpha && !node.has('transparency/alpha-prop')) {
         const a = parseFloat(alpha.value); if (a < 1) for (const p of match(inst, names)) p.alpha = a;
       }
+    }
+  }
+  // Canvas liveries (newer FG aircraft): Nasal canvas_livery_update.init(dir) + createTarget(name, objects, prop[, default]).
+  for (const inst of instances) {
+    const nasal = inst.props?.get('nasal');
+    if (!nasal) continue;
+    let text = '';
+    const walk = x => { text += '\n' + x.value; x.children.forEach(walk); };
+    walk(nasal);
+    const init = /canvas_livery(?:_update)?\s*\.\s*init\s*\(\s*["']([^"']+)["']/.exec(text);
+    if (!init) continue;
+    const livDir = normalize(init[1].startsWith('Aircraft/') ? init[1] : `${aircraftDir}/${init[1]}`);
+    const lists = [...text.matchAll(/(?:var\s+)?(\w+)\s*=\s*\[([^\]]*)\]/g)]
+      .map(m => ({ name: m[1], at: m.index, items: [...m[2].matchAll(/["']([^"']+)["']/g)].map(x => x[1]) }));
+    for (const m of text.matchAll(/createTarget\s*\(\s*["']([^"']+)["']\s*,\s*(\w+|\[[^\]]*\])\s*,\s*["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?/g)) {
+      const names = m[2].startsWith('[')
+        ? [...m[2].matchAll(/["']([^"']+)["']/g)].map(x => x[1])
+        : lists.filter(l => l.name === m[2] && l.at < m.index).at(-1)?.items ?? [];
+      const key = m[3].replace(/^\/+/, '');
+      let slot = slots.get(key);
+      if (!slot) { slot = { key, index: slots.size, defaultTex: null, dir: livDir, canvas: true }; slots.set(key, slot); }
+      if (m[4] && !slot.defaultTex) slot.defaultTex = await resolve(m[4], inst.dir);
+      for (const p of match(inst, names)) p.slot = slot;
     }
   }
   for (const { inst, node } of effects) {

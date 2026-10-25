@@ -18,7 +18,8 @@ export class PNode {
   get(p) {
     let n = this;
     for (const seg of p.split('/').filter(Boolean)) {
-      const m = /^([^[]+)(?:\[(\d+)\])?$/.exec(seg);
+      const m = /^([^[]+?)\s*(?:\[\s*(\d+)\s*\])?$/.exec(seg.trim());
+      if (!m) return null;
       n = n?.getChild(m[1], m[2] ? +m[2] : 0) ?? null;
       if (!n) return null;
     }

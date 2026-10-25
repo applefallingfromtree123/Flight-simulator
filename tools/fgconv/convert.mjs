@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { FGFS, normalize, pool } from './lib/fgfs.mjs';
 import { readProps, PNode } from './lib/props.mjs';
 import { loadModel, makeState } from './lib/model.mjs';
@@ -42,12 +43,24 @@ for (const id of ids) {
 async function convert(entry) {
   const acDir = `Aircraft/${entry.dir}`;
   console.log(`\n▶ ${entry.id} — ${entry.name} (${acDir}/${entry.set})`);
-  if (!OFFLINE) { const n = await fg.mirror(acDir); console.log(`  mirrored ${n} files`); }
+  if (entry.git) {
+    // Aircraft developed outside FGAddon (e.g. the C172P team's repository).
+    const local = fg.local(acDir);
+    if (!fs.existsSync(path.join(local, entry.set)) && !OFFLINE) {
+      console.log(`  cloning ${entry.git}`);
+      fs.rmSync(local, { recursive: true, force: true });
+      execFileSync('git', ['clone', '--depth', '1', '--quiet', entry.git, local], { stdio: 'inherit' });
+    }
+  } else if (!OFFLINE) {
+    const n = await fg.mirror(acDir);
+    console.log(`  mirrored ${n} files`);
+  }
 
   const setTree = new PNode('PropertyList');
   await readProps(fg, `${acDir}/${entry.set}`, setTree, { aircraftDir: acDir });
-  const modelPath = entry.model ?? setTree.str('sim/model/path');
+  let modelPath = entry.model ?? setTree.str('sim/model/path');
   if (!modelPath) throw new Error('no sim/model/path in set file');
+  if (!modelPath.startsWith('Aircraft/') && await fg.exists(`${acDir}/${modelPath}`)) modelPath = `${acDir}/${modelPath}`;
   const state = makeState(setTree);
   for (const [k, v] of Object.entries(entry.props ?? {})) { const g = state.get; state.get = p => (p.replace(/^\//, '') === k ? v : g(p)); }
 
@@ -69,7 +82,7 @@ async function convert(entry) {
 
   // ---------- textures ----------
   const texResolve = new Map();
-  const resolveTex = async (name, dir) => {
+  const resolveTex = async (name, dir, quiet = false) => {
     if (!name) return null;
     const k = `${dir}|${name}`;
     if (texResolve.has(k)) return texResolve.get(k);
@@ -77,14 +90,18 @@ async function convert(entry) {
     if (!f) for (const ext of ['.png', '.rgb', '.dds', '.jpg', '.rgba', '.sgi']) {
       f = await model.resolve(name.replace(/\.[^./\\]+$/, ext), dir); if (f) break;
     }
-    if (!f) console.log(`  ? texture not found: ${name} (in ${dir})`);
+    if (!f && !quiet) console.log(`  ? texture not found: ${name} (in ${dir})`);
     texResolve.set(k, f); return f;
   };
   for (const p of model.parts) {
     p.texFiles = new Map();
     for (const s of p.obj.surfs) {
       const name = s.texture ?? p.obj.texture;
-      if (name && !p.texFiles.has(name)) p.texFiles.set(name, await resolveTex(name, p.dir));
+      if (name && !p.texFiles.has(name)) {
+        let f = null;
+        for (const d of p.texDirs) if (!f) f = await resolveTex(name, d, d !== p.texDirs.at(-1));
+        p.texFiles.set(name, f);
+      }
     }
   }
 
@@ -244,6 +261,8 @@ async function findLiveries(entry, model, setTree, acDir) {
         const v = tree.str(s.key);
         let f = v ? await model.resolve(v, s.dir) : null;
         if (!f && v) f = await model.resolve(v, path.posix.dirname(file));
+        // canvas liveries keep each texture in resolution folders next to the livery XML
+        for (const res of ['4k', '8k', '2k', '1k']) if (!f && v) f = await model.resolve(`${res}/${v}`, s.canvas ? s.dir : path.posix.dirname(file));
         if (!f && v) {
           // Stale texture names are common (KAL/A380.png vs KAL/KAL.png): pick the image in the livery's own folder.
           const want = path.posix.dirname(normalize(`${s.dir}/${v}`));

@@ -749,7 +749,7 @@ void ASkyLineAircraftPawn::UpdateCamera(float Dt)
 	{
 		const FVector Eye = (Entry->bHasEye ? Entry->Eye : FVector(Entry->Bounds.Max.X - Sim->Def.Length * 12.0, -50, 150)) + MeshOffset;
 		Camera->SetRelativeLocationAndRotation(Eye, FRotator(HeadPitch, HeadYaw, 0));
-		Camera->SetFieldOfView(CockpitFov);
+		Camera->SetFieldOfView(static_cast<float>(CockpitFov));
 		return;
 	}
 	const FVector Target = GetActorLocation();
@@ -760,7 +760,7 @@ void ASkyLineAircraftPawn::UpdateCamera(float Dt)
 		const FVector ToAc = Target - TowerLocation;
 		const double Dist = ToAc.Size();
 		Camera->SetWorldLocationAndRotation(TowerLocation, ToAc.Rotation());
-		Camera->SetFieldOfView(FMath::Clamp(2.0 * FMath::RadiansToDegrees(FMath::Atan2(OrbitDistance * 0.9, Dist)), 2.0, 60.0));
+		Camera->SetFieldOfView(static_cast<float>(FMath::Clamp(2.0 * FMath::RadiansToDegrees(FMath::Atan2(OrbitDistance * 0.9, Dist)), 2.0, 60.0)));
 		if (Dist > 1500000.0)
 		{
 			SetView(ESkyLineView::Tower);  // too far: move the spotter

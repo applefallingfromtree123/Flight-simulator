@@ -142,7 +142,7 @@ void ASkyLineHUD::DrawHUD()
 
 void ASkyLineHUD::DrawInfo(float X, float Y)
 {
-	const Aircraft& A = *Aircraft->GetSim();
+	const skyline::Aircraft& A = *Aircraft->GetSim();
 	const FlightControl& F = *Aircraft->GetFcs();
 	const FSkyLineAircraftEntry* E = Aircraft->GetEntry();
 	const FSkyLineLivery* L = Aircraft->GetLivery();
@@ -170,7 +170,7 @@ void ASkyLineHUD::DrawInfo(float X, float Y)
 
 void ASkyLineHUD::DrawPfd(float X0, float Y0, float S)
 {
-	const Aircraft& A = *Aircraft->GetSim();
+	const skyline::Aircraft& A = *Aircraft->GetSim();
 	const FlightControl& F = *Aircraft->GetFcs();
 	Rect(X0, Y0, S, S, kBg);
 	const FVector2D C(X0 + S * 0.5f, Y0 + S * 0.47f);
@@ -362,7 +362,7 @@ void ASkyLineHUD::DrawPfd(float X0, float Y0, float S)
 
 void ASkyLineHUD::DrawNd(float X0, float Y0, float S)
 {
-	const Aircraft& A = *Aircraft->GetSim();
+	const skyline::Aircraft& A = *Aircraft->GetSim();
 	const FlightControl& F = *Aircraft->GetFcs();
 	Rect(X0, Y0, S, S, kBg);
 	const FVector2D C(X0 + S / 2, Y0 + S * 0.78f);
@@ -435,7 +435,7 @@ void ASkyLineHUD::DrawNd(float X0, float Y0, float S)
 
 void ASkyLineHUD::DrawEngines(float X0, float Y0, float W, float H)
 {
-	const Aircraft& A = *Aircraft->GetSim();
+	const skyline::Aircraft& A = *Aircraft->GetSim();
 	Rect(X0, Y0, W, H, kBg);
 	const int32 N = static_cast<int32>(A.Engines.size());
 	const bool bTurbine = A.Def.Eng.T == EngineType::Fan || A.Def.Eng.T == EngineType::Jet;
@@ -496,7 +496,7 @@ void ASkyLineHUD::DrawEngines(float X0, float Y0, float W, float H)
 void ASkyLineHUD::DrawMcp(float CenterX, float Y)
 {
 	const FlightControl& F = *Aircraft->GetFcs();
-	const Aircraft& A = *Aircraft->GetSim();
+	const skyline::Aircraft& A = *Aircraft->GetSim();
 	struct FItemDef { FString Id; FString Label; FString Value; bool bActive; bool bField; };
 	TArray<FItemDef> Items = {
 		{TEXT("ATHR"), TEXT("A/THR"), TEXT(""), F.Athr != AthrMode::Off, false},

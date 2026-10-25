@@ -1,135 +1,96 @@
-# SkyLine Flight Simulator
+# SkyLine Flight Simulator (Unreal Engine 5)
 
-실제 지구 전체(위성영상 + 실측 지형 + 실제 공항 9,560개)를 배경으로, **직접 만든 6자유도 비행역학 엔진** 위에서 동작하는
-전문가용 비행 시뮬레이터입니다. 웹 브라우저(WebGL2)에서 바로 실행됩니다.
-
-> 캐주얼 요소 없이 실제 조종 절차 · 계기 · 자동비행 · 경고 시스템을 재현하는 데 집중했습니다.
-
-## 실행
-
-> ⚠️ **index.html 파일을 직접 열면(더블클릭) 실행되지 않습니다.** 브라우저 보안 정책상 웹 서버가 필요합니다.
-
-**가장 쉬운 방법** — [Node.js LTS](https://nodejs.org) 설치 후:
-- **Windows**: `start.bat` 더블클릭
-- **macOS**: `start.command` 더블클릭 (처음엔 우클릭 → 열기)
-
-자동으로 설치 → 빌드 → 브라우저가 열립니다 (`http://localhost:4173`).
-
-**터미널**
-```bash
-npm install
-npm start          # 빌드 후 브라우저 자동 실행 (가장 빠름)
-npm run dev        # 개발 모드 http://localhost:5173
-npm test           # 헤드리스 비행 테스트
-```
-
-**온라인 (설치 없이)** — `https://applefallingfromtree123.github.io/Flight-simulator/`
-`.github/workflows/pages.yml`이 push마다 빌드·배포합니다. 저장소 Settings → Pages → Source는 **GitHub Actions** 로 두세요
-("Deploy from a branch"로 두면 빌드되지 않은 소스가 올라가 로딩 화면에서 멈춥니다).
-
-Chrome / Edge 최신 버전 권장 (WebGL2, 하드웨어 가속 필요). 조이스틱·HOTAS·러더 페달은 **설정 → 조이스틱** 에서 축을 할당합니다.
-
-## 엔진 구성 — 왜 Unity/Unreal이 아닌가
-
-요청하신 선택지 중 **"엔진을 직접 만든다"** 를 택했습니다. Unity/Unreal 프로젝트는 에디터와 수 GB의 에셋 없이는 빌드·실행할 수 없고,
-MSFS처럼 *지구 전체*를 스트리밍하려면 어차피 별도의 지구 렌더링 계층이 필요하기 때문입니다.
+실제 지구 위에서, 실제 기체 모델과 **실제 항공사 도색**으로, 직접 만든 6자유도 비행역학 엔진을 타고 나는 PC용 비행 시뮬레이터입니다.
+기존 웹(브라우저) 버전은 버리고 Unreal Engine 5로 새로 만들었습니다.
 
 | 계층 | 구현 |
 |---|---|
-| 비행역학 (FDM) | **자체 구현** — `src/sim/fdm.ts` 쿼터니언 6-DOF 강체, 120 Hz 고정 스텝 |
-| 공력 모델 | **자체 구현** — `src/sim/aero.ts` 기체 제원(전장·전폭·면적·후퇴각·실속속도·순항성능)에서 양력곡선, 항력극곡선, 안정·조종 미계수, 관성모멘트를 자동 도출 |
-| 엔진 | 터보팬 / 터보제트(애프터버너) / 피스톤+프로펠러 / 터보프롭 / 터보샤프트 — 스풀 지연, 고도·마하 감률, TSFC, 시동 시퀀스 |
-| 비행제어 | 재래식, **에어버스 Normal Law**(C*, 경로 유지, α-prot, 뱅크 보호, flare law), **보잉 C\*U**, 전투기 G-command, 헬기 SAS — 동적 역변환(NDI) 기반 |
-| 자동비행 | HDG / NAV(LNAV) / LOC / ALT / ALT\* / V/S / FLC / G/S / FLARE / ROLLOUT / TOGA, 오토스로틀(SPEED/MACH/THR CLB/IDLE/RETARD/α-floor), **CAT III 자동착륙** |
-| 시스템 | 전기·APU·블리드·연료·조명·엔진 시동 절차, Master Warning/Caution, GPWS(SINK RATE, PULL UP, TOO LOW GEAR/FLAPS), 전파고도 콜아웃, 이륙 CONFIG 경고 |
-| 렌더링 | CesiumJS(WebGL 지구본) 위에 자체 레이어: 지형 스트리밍·활주로 평탄화, 절차적 3D 기체 모델(도색 텍스처), 3D 조종석(실시간 계기 텍스처), 활주로/접근등/PAPI, 구름, 안개 |
-| 계기 | 자체 캔버스 렌더러 — PFD, ND(ARC/ROSE/PLAN), EICAS, 아날로그 6-pack, HUD |
+| 지구 | **Cesium for Unreal** — Google 실사 3D 타일(포토그래메트리 도시·지형, MSFS와 같은 방식) 또는 Cesium World Terrain + Bing 위성사진 |
+| 기체 | **FlightGear FGAddon의 실제 3D 모델** (조종석 포함) → 자체 변환기 `tools/fgconv`로 glTF 변환, 게임이 실행 중에 직접 불러옴 |
+| 도색 | FlightGear 커뮤니티의 **실제 항공사 리버리 텍스처** (대한항공, ANA, 루프트한자, 에미레이트, 아메리칸, 에어캐나다 …) |
+| 비행역학 | 자체 6-DOF 엔진 (C++17, 엔진 독립 모듈 `SkyLineSim`) — 기체 제원에서 공력계수 도출, 지면효과, 실속, 압축성, 착륙장치, 헬기 로터 |
+| 비행제어 | 에어버스 Normal Law, 보잉 C*U, 전투기 G-command, 헬기 SAS, 오토파일럿 (HDG/LNAV/LOC/GS/ALT/FLC/VS/FLARE/ROLLOUT/TOGA), 오토스로틀, **CAT III 자동착륙** |
+| 계기 | PFD (자세·속도/고도 테이프·FMA·ILS), ND (경로·활주로), 엔진/구성 표시, 클릭 가능한 MCP 패널 |
+| 공항 | OurAirports 9,560개 공항·활주로 (퍼블릭 도메인) |
 
-## 지도 (MSFS와 같은 실제 지구)
+## 1. 준비물
 
-- **지형**: AWS Terrain Tiles (SRTM/GMTED 기반 전 세계 표고) 실시간 스트리밍
-- **활주로 평탄화**: 실제 활주로 양 끝 좌표·표고로 지형을 정지(grading) — 물리와 렌더링이 동일한 지면 함수를 사용
-- **활주로 3D 표면**: 모든 포장 활주로를 실제 좌표·폭·표고로 생성하고 ICAO 표지(시단 피아노키, 번호·L/C/R, 중심선, 접지구역, 조준점, 가장자리선) 표시
-- **위성영상**: 설정에서 소스를 고를 수 있습니다.
-  - **Esri World Imagery** — 기본값, 키 불필요 (Maxar 등 상용 위성사진)
-  - **Sentinel-2 Cloudless** — 키 불필요, 유럽우주국(ESA) Sentinel-2 위성의 무료 공개 원본(EOX 가공, 약 10 m/px)
-  - **Bing Maps Aerial** — MSFS 2020과 같은 소스. [ion.cesium.com](https://ion.cesium.com/signup)에서 신용카드 없이 이메일만으로 무료 가입 후 발급되는 액세스 토큰만 입력하면 됩니다
-  - **Google 위성지도** — Google Maps Platform API 키 필요 (Google Cloud 결제 계정 등록 필요, 무료 사용량 있음)
-  
-  소스를 불러오지 못하면 자동으로 Esri로 되돌아갑니다.
-- **포토그래메트리 3D 도시**: 설정에서 **Google Photorealistic 3D Tiles** 활성화 (Google Maps Platform API 키 필요) — MSFS의 실사 도시와 가장 유사
-- **공항 DB**: OurAirports(퍼블릭 도메인) 대형·중형 공항 + 포장 활주로 소형 공항 9,560개, VOR/NDB 11,008개 (`npm run data` 로 갱신)
-- **실시간 태양 위치 · 대기 산란 · 야간 조명**, 기상 프리셋(CAVOK, 적운, 흐림, 뇌우, CAT III 안개, 강한 측풍), 바람 고도 프로파일·돌풍·난류
+- **Unreal Engine 5.5** 이상 (Epic Games Launcher)
+- **Cesium for Unreal** 플러그인 — Epic Launcher → Fab(마켓플레이스)에서 "Cesium for Unreal" 검색 → 엔진에 설치 (무료)
+- **Visual Studio 2022** (C++ 게임 개발 워크로드) — 프로젝트가 C++이라 처음 열 때 컴파일이 필요합니다
+- **Node.js 20+** 와 **git** — 기체 변환용
+- (권장) **Cesium ion 무료 계정** — https://ion.cesium.com/signup 에서 이메일로 가입 → Access Token 복사
 
-## 메인 화면 — 세계 지도 · 기종 · 커리어
+## 2. 기체 변환 (한 번만)
 
-- **세계 지도(지구본)에서 공항 선택**: 전 세계 9,560개 공항이 지구본 위 점으로 표시됩니다. 드래그로 회전, 휠/핀치로 확대하고
-  공항을 누르면 활주로·표고 정보 카드가 뜨며 **출발지 / 도착지로 설정**할 수 있습니다 (`🌐 세계 지도`, `지역`, `출발지`, `도착지` 바로가기).
-- **기종 · 도색** 탭: 치수·중량·엔진 모델·추력/중량비·항속거리·실속/이착륙 속도·시스템·초도 비행 연도 등 전체 제원과
-  **실제 운항사 도색(리버리)** 선택 — 대한항공, 아시아나, 제주항공, JAL, ANA, 루프트한자, 에미레이트, 델타, 유나이티드,
-  브리티시 에어웨이즈, 콴타스, 싱가포르항공, 캐세이퍼시픽, 에어프랑스, KLM, 라이언에어, 이지젯, 페덱스 등과 군용(USAF·ROKAF·
-  선더버드·블루엔젤스), 닥터헬기·경찰·해경 헬기, 제조사 하우스 컬러. 동체·꼬리날개에 타이틀, 등록부호, 색 띠, 꼬리 마크를 그려 넣습니다.
-- **커리어**: 학생 조종사(SPL)로 시작해 자가용(PPL) → 사업용(CPL) → 운송용(ATPL) → 대형기 기장 면장을 따면 쌍발기·헬기·
-  터보프롭·비즈니스 제트·여객기·광동체가 차례로 열립니다. 현재 위치한 실제 공항 주변 실제 공항으로 여객·화물·페리·관광·응급
-  의뢰가 생성되고, 도착 공항에서 정지 후 파킹 브레이크(또는 엔진 정지)하면 착륙 속도(fpm)·과속·회항·사고에 따라 보수·경험치·
-  평판이 정산되어 로그북에 기록됩니다.
+저장소 루트에서:
 
-## 3D 조종석
+```bash
+npm run aircraft                    # 카탈로그의 모든 기체 (약 40종, 다운로드 수 GB, 시간 꽤 걸림)
+npm run aircraft -- b777-300er a380 # 원하는 기체만
+```
 
-조종석 시점은 **3D 조종석**입니다 — 계기판, 글레어실드와 FCU, 페데스탈, 사이드 콘솔, 창틀, 오버헤드 패널, 좌석,
-요크/사이드스틱/스로틀(조작에 따라 움직임)이 있고, 화면에는 실제 PFD·ND·EICAS·6-pack 계기가 실시간으로 표시됩니다
-(여객기 · GA · 전투기 · 헬기 각각 다른 배치). 상단 `3D 조종석` 버튼으로 기존 2D 계기 패널과 전환할 수 있습니다.
+FlightGear 저장소에서 기체를 내려받아(`.fgcache/`) `Unreal/SkyLine/Aircraft/<기체>/` 에
+`<기체>.glb` + `Liveries/*.png` + `manifest.json` 을 만듭니다. 변환 결과물은 용량이 커서 git에 올리지 않습니다.
+변환할 기체 목록·기본 도색은 `tools/fgconv/catalog.json` 에서 바꿀 수 있습니다.
 
-## 기종 (65종)
+## 3. 실행
 
-- **협동체**: A320neo, A319, A321neo, A220-300, 737-700, 737-800, 737 MAX 8, 757-200, C919
-- **광동체**: A330-900neo, A340-600, A350-900, A350-1000, A380-800, 747-400, 747-8, 767-300ER, 777-200ER, 777-300ER, 787-8/-9/-10, MD-11, Concorde
-- **리저널**: E175, E195-E2, CRJ900, Dash 8-400, ATR 72-600
-- **비즈니스 제트**: Citation CJ4, Citation Longitude, HondaJet, Phenom 300E, G650ER, Global 7500
-- **터보프롭**: King Air 350i, TBM 940, PC-12 NGX, Grand Caravan, C-130J
-- **GA**: C152, C172S(G1000), C172N(아날로그), C182T, PA-28, SR22T, DA40, DA62, Baron G58, Bonanza G36, Extra 330LX, J-3 Cub
-- **군용/빈티지**: F-16C, F/A-18E, F-35A, Typhoon, P-51D, Spitfire Mk IX, DC-3
-- **헬리콥터**: H135, H125, Bell 407, R44, AW139, UH-60M, CH-47F
-- **글라이더**: ASK 21
+1. `Unreal/SkyLine/SkyLine.uproject` 더블클릭 → "모듈을 빌드하시겠습니까?" → **예**
+   (또는 우클릭 → Generate Visual Studio project files → `SkyLine.sln` 에서 `SkyLineEditor` 빌드)
+2. 에디터가 처음 열릴 때 `Content/Python/init_unreal.py` 가 기체용 기본 머티리얼을 자동으로 만듭니다.
+3. Cesium ion 토큰: 에디터 상단 **Cesium** 패널에서 로그인하거나, 게임 메뉴의 "지구 데이터" 칸에 붙여넣고 저장.
+4. **Play** (또는 Standalone Game). 메뉴에서 기종 → 도색 → 출발/도착 공항 → 시작 위치 → **비행 시작**.
 
-각 기종은 실제 제원(치수·중량·추력/출력·V-speed·순항 성능)으로 정의되고, 공력 계수는 이 값에서 자동 도출·보정되어
-실속속도, 이륙 거리, 상승률, 순항 속도가 실제와 비슷하게 나옵니다. 3D 외형도 같은 제원으로 절차적으로 생성합니다.
+> 에디터 Play 중에는 Esc가 플레이를 종료하므로 메뉴는 **M** 키를 쓰세요.
 
-## 조작 (요약)
+## 조작
 
-| 키 | 기능 |
+| 키 | 동작 |
 |---|---|
-| 방향키 / Q·E | 피치·롤 / 러더 |
-| F1–F4, PgUp/PgDn | 스로틀 (헬기: 콜렉티브), 아이들에서 F2 유지 = 역추진 |
-| F5–F8 · G · / | 플랩 · 기어 · 스피드브레이크 |
-| Z · Shift+Z | 오토파일럿 · 오토스로틀 |
-| H N U J V K | HDG · NAV · APP · ALT · V/S · FLC |
-| Ctrl+E | 자동 시동 |
-| 1–6 | 조종석 · HUD · 외부 · 관제탑 · 플라이바이 · 자유 시점 |
-| (터치) | iPad·태블릿: 화면 조종간·스로틀·러더·버튼 자동 표시 (상단 `터치` 버튼으로 켜기/끄기) |
-| O · C · M | 시스템 패널 · 체크리스트 · 항법 지도 |
+| ↑↓ / W S | 피치 (↑ = 기수 내림, 요크처럼) |
+| ←→ / A D | 롤 |
+| Q E | 러더 |
+| F3·PgUp / F2·PgDn | 스로틀 증가 / 감소 · F4 최대 · F1 아이들 |
+| R (누른 채) | 역추력 |
+| Num1 / Num7 | 피치 트림 (기수 올림 / 내림) |
+| F7 ] / F6 [ | 플랩 내림 / 올림 |
+| G | 랜딩기어 |
+| / · Shift+/ | 스피드브레이크 · 그라운드 스포일러 암 |
+| . (누른 채) | 브레이크 · P 파킹브레이크 · B 오토브레이크 |
+| Ctrl+E | 엔진 자동 시동/정지 |
+| Z · T · L · Insert | AP · A/THR · APP(ILS 접근) · TOGA |
+| V · C | 시점 전환 · 조종석 |
+| 마우스 오른쪽 드래그 / 휠 | 둘러보기 / 줌 (MCP 숫자 위에서 휠 = 값 조절) |
+| Tab · Pause · M · I · F10 | 시뮬 속도 · 일시정지 · 메뉴 · 계기 표시 · 도움말 |
 
-전체 목록은 게임 메뉴의 **조작법** 탭에 있습니다.
+게임패드(XInput): 왼스틱 조종, 오른스틱 러더/스로틀, 트리거 브레이크, Y 기어, 십자키 플랩, B AP, X 파킹브레이크.
 
-## 프로젝트 구조
+## 자동착륙 해보기
+
+메뉴에서 도착 공항을 고르고 시작 위치를 **최종 접근 10nm**로 하면 ILS가 암(arm)된 상태로 시작합니다.
+LOC → G/S 캡처 → 50ft 부근 FLARE → 접지 → ROLLOUT(중심선 유지, 오토브레이크)까지 자동으로 진행됩니다.
+다른 시작 위치에서는 MCP의 **APP** 버튼(또는 L)으로 접근을 암하고 AP를 켜면 됩니다.
+
+## 구조
 
 ```
-src/core      수학(쿼터니언, PID), 측지(대권, 편차)
-src/sim       FDM, 공력 도출, 엔진, 비행제어/자동비행, 시스템, 기종 DB
-src/world     Cesium 장면, 지형 스트리밍, 공항 DB, 절차적 glTF 기체 모델·도색 텍스처, 3D 조종석, 세계 지도
-src/career    커리어 (면장, 의뢰 생성, 정산, 로그북)
-src/avionics  PFD / ND / EICAS / 6-pack / HUD
-src/ui        메뉴(비행계획), 조종석 패널, 체크리스트
-src/input     키보드·게임패드
-src/audio     합성 엔진음, 경고음, 음성 콜아웃
-tests         헤드리스 비행 테스트
-tools         공항/항법 데이터 빌드 스크립트
+Unreal/SkyLine/
+  SkyLine.uproject
+  Source/SkyLineSim/     비행역학·비행제어 (엔진 독립 C++17, tests/sim 에서 헤드리스 테스트)
+  Source/SkyLine/        Unreal 게임 코드: 기체 로더(GLB→StaticMesh, 도색 교체), 폰, 게임모드(Cesium 지구·태양·구름),
+                         메뉴(Slate), 계기(HUD)
+  Content/Python/        에디터 시작 시 머티리얼 자동 생성
+  Data/                  공항·항법시설 DB
+  Aircraft/              (변환 결과, git 제외)
+tools/fgconv/            FlightGear → glTF 변환기 (AC3D/3DS 파서, 모델 XML/애니메이션/도색 해석, PNG/SGI/DDS 디코더)
+tests/sim/               비행 테스트 (이륙·상승·선회·속도유지·ILS 자동착륙·FBW·헬기 호버, 30개)
 ```
 
-## 한계 (솔직하게)
+비행 테스트: `npm test` (CMake + C++ 컴파일러 필요).
 
-- MSFS 2024 수준의 개별 기종 3D 조종석(스위치 하나하나 클릭)과 전 세계 포토그래메트리는 수십 명·수년 규모의 상용 데이터가 필요합니다.
-  여기서는 2D 글래스/아날로그 계기 패널 + 오버헤드 시스템 창으로 절차를 재현하고, 실사 3D 도시는 Google 3D Tiles(키 필요)로 대체합니다.
-- ILS 주파수 데이터는 공개 DB에 없어, 선택한 도착 활주로에 3° 가상 ILS를 생성합니다. SID/STAR, ATC, AI 트래픽은 없습니다.
+## 라이선스 / 출처
 
-데이터 출처: OurAirports (Public Domain), AWS Terrain Tiles, Esri World Imagery, Cesium Natural Earth II.
+- 기체 3D 모델과 도색: FlightGear FGAddon 및 각 기체 제작자 (대부분 GPL-2.0-or-later). 변환된 파일은 원 라이선스를 따릅니다.
+- 지구 데이터: Cesium ion / Google Map Tiles / Bing Maps — 각 서비스 약관을 따르며 화면 하단에 저작권 표시가 나옵니다.
+- 공항 데이터: OurAirports (퍼블릭 도메인).
