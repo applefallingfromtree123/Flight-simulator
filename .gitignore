@@ -4,7 +4,7 @@ dist/
 .DS_Store
 # FlightGear download cache and converted aircraft (regenerate with tools/fgconv)
 .fgcache/
-Unreal/SkyLine/Content/ImportSource/
+Unreal/SkyLine/Aircraft/
 # Unreal Engine build products
 Unreal/SkyLine/Binaries/
 Unreal/SkyLine/Intermediate/
@@ -15,3 +15,4 @@ Unreal/SkyLine/Plugins/*/Intermediate/
 Unreal/SkyLine/.vs/
 Unreal/SkyLine/*.sln
 build/
+Unreal/SkyLine/Content/ImportSource/

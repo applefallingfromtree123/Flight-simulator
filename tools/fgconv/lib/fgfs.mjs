@@ -5,6 +5,9 @@ import path from 'node:path';
 
 const FGADDON = 'https://svn.code.sf.net/p/flightgear/fgaddon/trunk';
 const FGDATA = 'https://gitlab.com/flightgear/fgdata/-/raw/next';
+const FGDATA_API = 'https://gitlab.com/api/v4/projects/flightgear%2Ffgdata/repository/tree';
+// Aircraft folders that ship inside FGData rather than FGAddon.
+const FGDATA_RX = /^(Aircraft\/(Generic|Instruments|Instruments-3d|Common|ufo|c172p|Dragonfly|Models)\/|(?!Aircraft\/))/i;
 
 // Directories that never contain anything the visual model needs.
 const SKIP_DIRS = new Set(['sounds', 'docs', 'doc', 'documentation', 'nasal', 'tutorials', 'dev', '_dev', 'paintkit',
@@ -28,7 +31,7 @@ export class FGFS {
     const enc = p.split('/').map(encodeURIComponent).join('/');
     const out = [];
     // Aircraft/<x> lives in fgaddon unless it is one of the shared fgdata folders.
-    if (/^Aircraft\/(Generic|Instruments|Instruments-3d|Common|ufo|c172p|Dragonfly|Models)\//i.test(p)) out.push(`${FGDATA}/${enc}`);
+    if (FGDATA_RX.test(p)) out.push(`${FGDATA}/${enc}`);
     else if (p.startsWith('Aircraft/')) out.push(`${FGADDON}/${enc}`, `${FGDATA}/${enc}`);
     else out.push(`${FGDATA}/${enc}`);
     return out;
@@ -68,7 +71,8 @@ export class FGFS {
     const marker = path.join(local, '.listing.json');
     if (fs.existsSync(marker)) return JSON.parse(fs.readFileSync(marker, 'utf8'));
     let names = null;
-    if (!this.offline && dir.startsWith('Aircraft/')) {
+    if (!this.offline && FGDATA_RX.test(dir + '/')) names = await gitlabTree(dir);
+    else if (!this.offline && dir.startsWith('Aircraft/')) {
       const html = await get(`${FGADDON}/${dir.split('/').map(encodeURIComponent).join('/')}/`);
       if (html) names = [...html.toString('utf8').matchAll(/<li><a href="([^"]+)">/g)].map(m => decodeURIComponent(m[1])).filter(n => n !== '../');
     }
@@ -103,6 +107,19 @@ export class FGFS {
     });
     return files.length;
   }
+}
+
+async function gitlabTree(dir) {
+  const names = [];
+  for (let page = 1; page < 50; page++) {
+    const buf = await get(`${FGDATA_API}?path=${encodeURIComponent(dir)}&ref=next&per_page=100&page=${page}`);
+    if (!buf) break;
+    let items; try { items = JSON.parse(buf.toString('utf8')); } catch { break; }
+    if (!Array.isArray(items) || !items.length) break;
+    for (const it of items) names.push(it.type === 'tree' ? it.name + '/' : it.name);
+    if (items.length < 100) break;
+  }
+  return names.length ? names : null;
 }
 
 export function normalize(p) {

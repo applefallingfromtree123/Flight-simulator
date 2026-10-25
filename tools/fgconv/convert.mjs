@@ -19,7 +19,7 @@ const repo = path.resolve(here, '../..');
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args.splice(i, 2)[1] : d; };
 const flag = k => { const i = args.indexOf(k); if (i >= 0) args.splice(i, 1); return i >= 0; };
-const OUT = path.resolve(opt('--out', path.join(repo, 'Unreal/SkyLine/Content/ImportSource/Aircraft')));
+const OUT = path.resolve(opt('--out', path.join(repo, 'Unreal/SkyLine/Aircraft')));
 const CACHE = path.resolve(opt('--cache', path.join(repo, '.fgcache')));
 const MAX_TEX = +opt('--max-tex', 4096);
 const MAX_LIVERIES = +opt('--liveries', 1000);
