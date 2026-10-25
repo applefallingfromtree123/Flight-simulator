@@ -199,7 +199,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     inst.props = node;
     // <texture-path> adds a texture search directory (relative to the model XML) for the geometry and animations.
     const tp = node.str('texture-path');
-    inst.texDir = tp ? normalize(`${inst.dir}/${tp}`) : inst.dir;
+    inst.texDir = tp ? normalize(/^Aircraft\//.test(tp) ? tp : `${inst.dir}/${tp}`) : inst.dir;
     // Model-local frame -> parent frame: this file's <offsets>, then the parent's <model><offsets>.
     inst.local = mul(offsetsMatrix(node.get('offsets')), localToParent);
     inst.node = newNode(name, parent?.node ?? null, inst, true);
