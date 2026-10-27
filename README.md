@@ -1,7 +1,14 @@
 # SkyLine Flight Simulator (Unreal Engine 5)
 
 실제 지구 위에서, 실제 기체 모델과 **실제 항공사 도색**으로, 직접 만든 6자유도 비행역학 엔진을 타고 나는 비행 시뮬레이터입니다.
-**Unreal Engine 5 전용** — Windows/Mac PC와 **아이패드(iPadOS 16+)** 에서 실행됩니다. (예전 웹 버전은 삭제되어 GitHub Pages 주소는 더 이상 동작하지 않습니다.)
+두 가지 버전이 있습니다.
+
+- **웹 버전 (GitHub Pages)** — 설치 없이 아이패드 Safari·PC 브라우저에서 바로: **https://applefallingfromtree123.github.io/Flight-simulator/**
+  (아이패드: Safari로 열고 공유 → "홈 화면에 추가" 하면 앱처럼 전체 화면으로 실행됩니다. 터치 조종 지원)
+- **Unreal Engine 5 버전** (`Unreal/SkyLine`) — PC 고품질 버전. Mac + Xcode가 있으면 아이패드 네이티브 앱으로도 빌드 가능.
+
+두 버전 모두 **자유 비행 · 커리어 · 액티비티(착륙 챌린지/디스커버리 비행)** 를 지원합니다.
+웹 버전 개발: `npm install` → `npm run dev` (빌드 `npm run build`, 비행역학 테스트 `npm test`). `main` 또는 이 브랜치에 push하면 GitHub Actions가 Pages로 자동 배포합니다.
 
 ## 게임 모드 (MSFS 2024 스타일)
 
@@ -124,7 +131,7 @@ tools/fgconv/            FlightGear → glTF 변환기 (AC3D/3DS 파서, 모델 
 tests/sim/               비행 테스트 (이륙·상승·선회·속도유지·ILS 자동착륙·FBW·헬기 호버, 30개)
 ```
 
-비행 테스트: `npm test` (CMake + C++ 컴파일러 필요).
+C++ 비행 테스트: `npm run test:sim` (CMake + C++ 컴파일러 필요).
 
 ## 라이선스 / 출처
 
