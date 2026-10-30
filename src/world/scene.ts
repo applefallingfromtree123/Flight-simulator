@@ -22,7 +22,14 @@ export interface SceneOptions {
   ionToken: string;
   photoreal: boolean;
   shadows: boolean;
-  quality: 'low' | 'medium' | 'high';
+  quality: 'low' | 'medium' | 'high' | 'ultra';
+}
+/** More light from the sky/ground reflections on a model, so its shaded side isn't black under HDR. */
+function brightenSkyLight(model: Cesium.Model, brightness: number) {
+  const em = (model as unknown as { environmentMapManager?: Cesium.DynamicEnvironmentMapManager }).environmentMapManager;
+  if (!em) return;
+  em.brightness = brightness;
+  em.groundAlbedo = 0.45;
 }
 export type ViewMode = 'cockpit' | 'cockpit-hud' | 'chase' | 'tower' | 'flyby' | 'free';
 
@@ -78,7 +85,7 @@ export class World {
       // stopping forever — is caught, reported, and rendering simply continues on the next frame.
       useDefaultRenderLoop: false,
       showRenderLoopErrors: false,
-      msaaSamples: opts.quality === 'high' ? 4 : 1,
+      msaaSamples: opts.quality === 'high' || opts.quality === 'ultra' ? 4 : 1,
       contextOptions: { webgl: { powerPreference: 'high-performance' } },
     });
     const v = this.viewer;
@@ -91,19 +98,15 @@ export class World {
     s.globe.enableLighting = true;
     s.globe.baseColor = Cesium.Color.fromCssColorString('#1b2430'); // dark slate while imagery streams in or if it fails — never literal black
     s.globe.depthTestAgainstTerrain = true;
-    s.globe.maximumScreenSpaceError = opts.quality === 'high' ? 1.5 : opts.quality === 'medium' ? 2 : 3;
-    s.globe.tileCacheSize = 400;
     s.globe.preloadSiblings = false;
     s.globe.loadingDescendantLimit = 30;
     s.globe.showGroundAtmosphere = true;
     s.fog.enabled = true;
     s.fog.density = 2.0e-4;
     if (s.skyAtmosphere) s.skyAtmosphere.show = true;
-    s.highDynamicRange = false;
     s.postProcessStages.fxaa.enabled = true;
-    v.shadows = opts.shadows;
-    v.shadowMap.softShadows = true;
     v.shadowMap.maximumDistance = 800;
+    this.applyGraphics(opts.quality, opts.shadows);
     s.screenSpaceCameraController.enableInputs = false;
     const cam = s.camera;
     (cam.frustum as Cesium.PerspectiveFrustum).near = 0.3;
@@ -115,6 +118,39 @@ export class World {
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
     if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
+  }
+
+  private tier = 1;
+  /**
+   * Graphics quality: render resolution (retina on high/ultra), HDR with PBR-neutral tone mapping,
+   * sun-driven atmosphere and sky reflections on the aircraft, terrain detail, shadow quality, night bloom.
+   */
+  applyGraphics(quality: SceneOptions['quality'], shadows: boolean) {
+    const s = this.scene, v = this.viewer;
+    const tier = this.tier = { low: 0, medium: 1, high: 2, ultra: 3 }[quality] ?? 1;
+    const dpr = window.devicePixelRatio || 1;
+    v.useBrowserRecommendedResolution = tier < 2;
+    v.resolutionScale = tier < 2 ? 1 : Math.min(dpr, tier === 3 ? 2 : 1.5) / dpr;
+    s.highDynamicRange = tier >= 1;
+    s.postProcessStages.tonemapper = Cesium.Tonemapper.PBR_NEUTRAL;
+    s.postProcessStages.exposure = 1.5;
+    s.atmosphere.dynamicLighting = Cesium.DynamicAtmosphereLightingType.SUNLIGHT;
+    s.globe.dynamicAtmosphereLighting = true;
+    s.globe.dynamicAtmosphereLightingFromSun = true;
+    s.globe.maximumScreenSpaceError = [3, 2, 1.5, 1.15][tier];
+    s.globe.tileCacheSize = [200, 400, 600, 900][tier];
+    s.fog.density = tier >= 2 ? 1.6e-4 : 2.0e-4;
+    v.shadows = shadows || tier >= 2;
+    v.shadowMap.softShadows = tier >= 1;
+    v.shadowMap.size = tier >= 3 ? 4096 : 2048;
+    const bloom = s.postProcessStages.bloom;
+    bloom.uniforms.contrast = 119;
+    bloom.uniforms.brightness = -0.62;
+    bloom.uniforms.delta = 1.0;
+    bloom.uniforms.sigma = 2.2;
+    bloom.uniforms.stepSize = 1.0;
+    bloom.uniforms.glowOnly = false;
+    bloom.enabled = false;
   }
 
   private imageryGen = 0;
@@ -273,6 +309,7 @@ export class World {
       this.modelNodes = nodes;
     }
     this.scene.primitives.add(this.model);
+    brightenSkyLight(this.model, 1.9);
     this.propAngle = this.modelNodes!.props.map(() => 0);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
@@ -286,6 +323,7 @@ export class World {
           fg.m.screens ? fetch(`aircraft/${fg.m.id}/screens.json`).then(r => r.ok ? r.json() as Promise<FgScreenFace[]> : []) : Promise.resolve([] as FgScreenFace[]),
         ]);
         interior.show = false;
+        brightenSkyLight(interior, 1.5);
         this.scene.primitives.add(interior);
         fg.interior = interior;
         // glTF (left, up, fwd) + offset -> model frame (fwd, left, up)
@@ -455,6 +493,9 @@ export class World {
       const near = this.db.nearest(ac, 6, 30000);
       for (const { apt } of near) for (const rw of apt.runways) if (rw.hard && (rw.lighted || apt.size >= 2)) this.buildRunwayLights(rw);
     }
+    // lights glow at night on high/ultra
+    this.scene.postProcessStages.bloom.enabled = this.tier >= 2 && night > 0.45;
+    this.scene.postProcessStages.exposure = 1.5 - 0.6 * night;
     const vis = night > 0.05;
     const scale = 0.5 + night * 0.9;
     this.rwyLights.show = vis || night > 0;

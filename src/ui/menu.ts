@@ -27,7 +27,7 @@ export interface FlightConfig {
 }
 export interface Settings {
   imagery: ImagerySource; googleKey: string; ionToken: string; photoreal: boolean;
-  quality: 'low' | 'medium' | 'high'; shadows: boolean; volume: number; autoMixture: boolean;
+  quality: 'low' | 'medium' | 'high' | 'ultra'; shadows: boolean; volume: number; autoMixture: boolean;
   deck3d: boolean;
 }
 
@@ -512,7 +512,7 @@ export class Menu {
         <p class="note">지형 고도는 AWS Terrain Tiles(SRTM 기반, 전 세계)를 실시간 스트리밍하며, 활주로는 실제 활주로 좌표/표고로 평탄화됩니다. Google 3D 타일을 켜면 MSFS의 포토그래메트리 도시와 유사한 실사 3D 지형·건물이 표시됩니다.</p>
       </div>
       <div class="sec"><h3>그래픽 · 사운드</h3>
-        <div class="frow"><div class="field"><label>품질</label><select id="q"><option value="low">낮음</option><option value="medium">중간</option><option value="high">높음 (MSAA)</option></select></div>
+        <div class="frow"><div class="field"><label>품질</label><select id="q"><option value="low">낮음</option><option value="medium">중간</option><option value="high">높음 (레티나 해상도 · MSAA · 그림자)</option><option value="ultra">울트라 (최대 해상도 · 4K 그림자)</option></select></div>
         <div class="field"><label>그림자</label><select id="sh"><option value="0">끔</option><option value="1">켬</option></select></div></div>
         <div class="field"><label>음량 <b id="volV">${Math.round(s.volume * 100)}%</b></label><input id="vol" type="range" min="0" max="100" value="${Math.round(s.volume * 100)}"></div>
         <div class="field"><label><input type="checkbox" id="mix" ${s.autoMixture ? 'checked' : ''}> 피스톤 엔진 자동 혼합비 (Auto-lean)</label></div>

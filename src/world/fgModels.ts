@@ -17,8 +17,6 @@ export interface FgModel {
 
 /** Livery ids of real FlightGear liveries are stored with this prefix (procedural ones have none). */
 export const FG_PREFIX = 'fg:';
-/** Converted models that would misrepresent the simulated type. */
-const EXCLUDE = new Set(['erj145']);
 /** Extra web aircraft ids that may use a model converted for another flight model. */
 const ALIAS: Record<string, string> = {};
 
@@ -29,7 +27,7 @@ export async function loadFgModels(): Promise<number> {
     const r = await fetch('aircraft/index.json', { cache: 'no-cache' });
     if (!r.ok) return 0;
     const idx = await r.json() as { aircraft: FgModel[] };
-    for (const m of idx.aircraft) if (!EXCLUDE.has(m.id) && !byAircraft.has(m.fdm)) byAircraft.set(m.fdm, m);
+    for (const m of idx.aircraft) if (!byAircraft.has(m.fdm)) byAircraft.set(m.fdm, m);
     for (const [ac, fdm] of Object.entries(ALIAS)) { const m = byAircraft.get(fdm); if (m && !byAircraft.has(ac)) byAircraft.set(ac, m); }
   } catch { /* no converted models deployed: procedural only */ }
   return byAircraft.size;

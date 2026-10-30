@@ -16,8 +16,9 @@ Needs Pillow.
 import argparse, copy, io, json, os, struct, sys
 from PIL import Image
 
-# one FlightGear model per web aircraft (several A320 variants share one flight model)
-SKIP = {'a320-cfm', 'a320-iae', 'a320neo-cfm'}
+SKIP = set()
+# models that are their own aircraft in the web version (the Unreal catalog flies them with a sibling's flight model)
+WEB_FDM = {'a320-cfm': 'a320-cfm', 'a320-iae': 'a320-iae', 'a320neo-cfm': 'a320neo-cfm', 'erj145': 'erj145'}
 COMP = {5120: ('b', 1), 5121: ('B', 1), 5122: ('h', 2), 5123: ('H', 2), 5125: ('I', 4), 5126: ('f', 4)}
 NCOMP = {'SCALAR': 1, 'VEC2': 2, 'VEC3': 3, 'VEC4': 4}
 
@@ -303,6 +304,15 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
     os.makedirs(os.path.join(out_dir, 'l'), exist_ok=True)
     base = subset(j, bin_, lambda n: n != 'Interior', out_dir, 't', 'model.bin', max_px, quality)
     mats, textures = base['materials'], base['textures']
+    # glossier paint and clear glass: the web scene lights models with the sky's reflections (PBR)
+    for m in mats:
+        pbr = m.setdefault('pbrMetallicRoughness', {})
+        name = m.get('name', '')
+        if name.startswith('LIVERY'):
+            pbr['roughnessFactor'] = min(pbr.get('roughnessFactor', 1), 0.32)
+            pbr['metallicFactor'] = 0.0
+        elif name.startswith('GLASS'):
+            pbr['roughnessFactor'] = 0.05
 
     has_interior = any(n.get('name') == 'Interior' and 'mesh' in n for n in j['nodes'])
     if has_interior:
@@ -330,7 +340,7 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
     livs = man.get('liveries', [])
     default = man.get('defaultLivery') or (livs[0]['id'] if livs else '')
     livs.sort(key=lambda l: (l['id'] != default, l['name'].lower()))
-    livs = livs[:max_liv]
+    livs = livs[:max_liv] if max_liv > 0 else livs
     safe = lambda s: ''.join(c if c.isalnum() or c in '-_' else '_' for c in s)
     out_livs = []
     for l in livs:
@@ -352,12 +362,49 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
         out_livs.append({'id': 'default', 'name': '기본 도색', 'file': 'default.gltf'})
 
     return {
-        'id': man['id'], 'fdm': man['fdm'], 'name': man['name'], 'source': man.get('source', ''), 'license': man.get('license', ''),
+        'id': man['id'], 'fdm': WEB_FDM.get(man['id'], man['fdm']), 'name': man['name'], 'source': man.get('source', ''), 'license': man.get('license', ''),
         'bounds': man['bounds'], 'groundY': man['groundY'], 'eye': man.get('eye'),
         'interior': has_interior, 'screens': len(faces),
         'poses': man.get('poses', []), 'spins': man.get('spins', []),
         'defaultLivery': out_livs[0]['id'], 'liveries': out_livs,
     }
+
+
+def dedupe(out, ids):
+    """Identical files across aircraft (A320 family cockpits, the Dreamlifter's 747 parts) are stored once:
+    later copies are deleted and their glTFs point at the first one ('../<id>/<path>')."""
+    import hashlib
+    owner, saved = {}, 0
+    for i in ids:
+        d = os.path.join(out, i)
+        if not os.path.isdir(d):
+            continue
+        gltfs = [f for f in os.listdir(d) if f.endswith('.gltf')]
+        docs = {f: json.load(open(os.path.join(d, f))) for f in gltfs}
+        local = {}
+        for doc in docs.values():
+            for item in doc.get('images', []) + doc.get('buffers', []):
+                u = item.get('uri', '')
+                if not u or u.startswith('..') or u in local:
+                    continue
+                p = os.path.join(d, u)
+                if not os.path.exists(p):
+                    continue
+                h = hashlib.sha1(open(p, 'rb').read()).hexdigest()
+                local[u] = owner[h] if h in owner and owner[h][0] != i else None
+                owner.setdefault(h, (i, u))
+        moved = {u: f'../{o[0]}/{o[1]}' for u, o in local.items() if o}
+        if not moved:
+            continue
+        for f, doc in docs.items():
+            for item in doc.get('images', []) + doc.get('buffers', []):
+                if item.get('uri') in moved:
+                    item['uri'] = moved[item['uri']]
+            json.dump(doc, open(os.path.join(d, f), 'w'), separators=(',', ':'))
+        for u in moved:
+            saved += os.path.getsize(os.path.join(d, u))
+            os.remove(os.path.join(d, u))
+    print(f'dedupe: {saved / 1e6:.1f} MB of identical files shared')
 
 
 def main():
@@ -366,7 +413,7 @@ def main():
     ap.add_argument('--out', default='web-aircraft')
     ap.add_argument('--max', type=int, default=1024)
     ap.add_argument('--interior-max', type=int, default=1024)
-    ap.add_argument('--liveries', type=int, default=16)
+    ap.add_argument('--liveries', type=int, default=0, help='max liveries per aircraft (0 = all)')
     ap.add_argument('--quality', type=int, default=82)
     ap.add_argument('ids', nargs='*')
     a = ap.parse_args()
@@ -384,6 +431,7 @@ def main():
     if any(e['id'] == 'b747-400' for e in index):
         import lcf  # Dreamlifter: the 747-400 with the LCF fuselage
         lcf.build(a.out, a.src, a.max)
+    dedupe(a.out, [e['id'] for e in json.load(open(os.path.join(a.out, 'index.json'), encoding='utf-8'))['aircraft']])
 
 
 if __name__ == '__main__':

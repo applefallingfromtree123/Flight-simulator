@@ -113,7 +113,7 @@ class App {
       this.sound.volume = st.volume;
       this.world.opts = { ...this.world.opts, ...st };
       this.world.setImagery(st.imagery);
-      this.world.viewer.shadows = st.shadows;
+      this.world.applyGraphics(st.quality, st.shadows);
       if (st.photoreal && st.googleKey) void this.world.enablePhotoreal(st.googleKey);
       else this.world.disablePhotoreal();
       toast('설정 저장됨');
