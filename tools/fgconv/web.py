@@ -381,6 +381,9 @@ def main():
         except Exception as ex:  # keep going: one broken aircraft shouldn't stop the rest
             print(f'{i}: FAILED {ex}', file=sys.stderr)
     json.dump({'aircraft': index}, open(os.path.join(a.out, 'index.json'), 'w', encoding='utf-8'), ensure_ascii=False, separators=(',', ':'))
+    if any(e['id'] == 'b747-400' for e in index):
+        import lcf  # Dreamlifter: the 747-400 with the LCF fuselage
+        lcf.build(a.out, a.src, a.max)
 
 
 if __name__ == '__main__':
