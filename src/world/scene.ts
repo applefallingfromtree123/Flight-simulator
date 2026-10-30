@@ -9,7 +9,7 @@ import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
 import { fgLivery, fgModelFor, type FgModel } from './fgModels.ts';
-import { Cockpit3D } from './cockpit3d.ts';
+import { Cockpit3D, type FgScreenFace } from './cockpit3d.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
@@ -38,7 +38,7 @@ export class World {
   private modelNodes: ModelNodes | null = null;
   private propAngle: number[] = [];
   /** Real FlightGear model in use (null = procedural model). */
-  private fg: { m: FgModel; off: Cesium.Cartesian3; angle: number[]; placed: boolean } | null = null;
+  private fg: { m: FgModel; off: Cesium.Cartesian3; angle: number[]; placed: boolean; interior: Cesium.Model | null; interiorPlaced: boolean } | null = null;
   private lights: Cesium.PointPrimitiveCollection;
   private acLights: Cesium.PointPrimitive[] = [];
   private rwyLights: Cesium.PointPrimitiveCollection;
@@ -250,6 +250,7 @@ export class World {
   // ───────────────────────── aircraft model ─────────────────────────
   async loadAircraft(ac: Aircraft, liveryId?: string) {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
+    if (this.fg?.interior) this.scene.primitives.remove(this.fg.interior);
     this.fg = null;
     const fg = fgModelFor(ac.def.id);
     if (fg) {
@@ -258,7 +259,7 @@ export class World {
         this.model = await Cesium.Model.fromGltfAsync({ url: `aircraft/${fg.id}/${liv.file}`, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
         // FG models are built around the nose: put the CG (47 % of the length behind the nose) at the origin
         // and the tyres on the ground at the gear's CG height (same placement as the Unreal version)
-        this.fg = { m: fg, off: new Cesium.Cartesian3(0, -ac.aero.cgHeight - fg.groundY, -(fg.bounds.max[2] - 0.47 * ac.def.L)), angle: fg.spins.map(() => 0), placed: false };
+        this.fg = { m: fg, off: new Cesium.Cartesian3(0, -ac.aero.cgHeight - fg.groundY, -(fg.bounds.max[2] - 0.47 * ac.def.L)), angle: fg.spins.map(() => 0), placed: false, interior: null, interiorPlaced: false };
         this.modelNodes = { props: [], gear: [] };
       } catch (e) {
         console.error('FlightGear model failed, using the procedural model', e);
@@ -275,7 +276,26 @@ export class World {
     this.propAngle = this.modelNodes!.props.map(() => 0);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
-    try { await this.cockpit3d.build(ac, this.eyePoint(ac)); }
+    // the real cockpit: interior mesh + its displays drawn live (falls back to the procedural flight deck)
+    let fgFaces: { faces: FgScreenFace[]; eyeModel: [number, number, number] } | undefined;
+    if (this.fg?.m.interior && this.fg.m.eye) {
+      const fg = this.fg, o = fg.off;
+      try {
+        const [interior, faces] = await Promise.all([
+          Cesium.Model.fromGltfAsync({ url: `aircraft/${fg.m.id}/interior.gltf`, backFaceCulling: false, shadows: Cesium.ShadowMode.DISABLED }),
+          fg.m.screens ? fetch(`aircraft/${fg.m.id}/screens.json`).then(r => r.ok ? r.json() as Promise<FgScreenFace[]> : []) : Promise.resolve([] as FgScreenFace[]),
+        ]);
+        interior.show = false;
+        this.scene.primitives.add(interior);
+        fg.interior = interior;
+        // glTF (left, up, fwd) + offset -> model frame (fwd, left, up)
+        const toModel = (x: number, y: number, z: number): [number, number, number] => [z + o.z, x + o.x, y + o.y];
+        for (const f of faces) for (let i = 0; i < f.pos.length; i += 3) [f.pos[i], f.pos[i + 1], f.pos[i + 2]] = toModel(f.pos[i], f.pos[i + 1], f.pos[i + 2]);
+        const e = fg.m.eye!;
+        fgFaces = { faces, eyeModel: toModel(e[0], e[1], e[2]) };
+      } catch (e) { console.error('FlightGear cockpit failed, using the procedural flight deck', e); }
+    }
+    try { await this.cockpit3d.build(ac, this.eyePoint(ac), fgFaces); }
     catch (e) { console.error('3D cockpit build failed', e); this.cockpit3d.destroy(); }
   }
 
@@ -329,7 +349,19 @@ export class World {
     if (!this.model) return;
     this.modelMatrixFor(ac, this.model.modelMatrix);
     Cesium.Matrix4.clone(this.model.modelMatrix, this.acMatrix);
-    this.model.show = this.view !== 'cockpit' && this.view !== 'cockpit-hud';
+    const inCockpit = this.view === 'cockpit' || this.view === 'cockpit-hud';
+    const realDeck = this.view === 'cockpit' && this.deck3d && !!this.fg?.interior;
+    this.model.show = !inCockpit || realDeck;
+    if (this.fg?.interior) {
+      const it = this.fg.interior;
+      it.show = realDeck;
+      Cesium.Matrix4.clone(this.model.modelMatrix, it.modelMatrix);
+      if (!this.fg.interiorPlaced && it.ready) {
+        this.fg.interiorPlaced = true;
+        const n = it.getNode('Interior');
+        if (n) n.matrix = Cesium.Matrix4.fromTranslation(this.fg.off);
+      }
+    }
     const nodes = this.modelNodes!;
     if (this.fg && this.model.ready) this.updateFgModel(ac, dt);
     else if (this.model.ready) {
@@ -548,6 +580,11 @@ export class World {
   // ───────────────────────── cameras ─────────────────────────
   eyePoint(ac: Aircraft): V3 {
     const d = ac.def, r = d.dia / 2;
+    // real cockpit: the model's pilot eye point (glTF left, up, fwd -> body fwd, right, down)
+    if (this.fg?.interior && this.fg.m.eye && this.deck3d) {
+      const [x, y, z] = this.fg.m.eye, o = this.fg.off;
+      return [z + o.z, -(x + o.x), -(y + o.y)];
+    }
     if (d.fdm === 'rotor') return [d.L * 0.5 - Math.min(2.2, d.L * 0.18), -0.45, -r * 0.35];
     const k = d.cockpit === 'fighter' ? 0.2 : d.cat === 'ga' || d.cat === 'vintage' || d.cat === 'glider' ? (d.eng.mount === 'nose' ? 0.33 : 0.25) : d.cat === 'turboprop' ? 0.22 : Math.min(0.1, 3.0 / d.L + 0.02);
     const seat = d.cockpit === 'fighter' || d.seats === 1 || d.cat === 'glider' || d.id === 'j3cub' || d.id === 'extra330' ? 0 : -Math.min(0.55, r * 0.35);
@@ -564,7 +601,7 @@ export class World {
       const eye = this.bodyToWorld(ac, this.eyePoint(ac));
       const q = qMul(ac.q, qFromEuler(this.head.yaw * DEG, this.head.pitch * DEG, 0));
       const [psi, th, ph] = qToEuler(q);
-      const deck = this.view === 'cockpit' && this.deck3d && !!this.cockpit3d.model;
+      const deck = this.view === 'cockpit' && this.deck3d && this.cockpit3d.active;
       fr.fov = clamp((deck ? 80 : 70) / this.head.zoom, 20, 100) * DEG;
       fr.near = deck ? 0.08 : 0.3;
       // shift the projection centre into the visible area above the instrument panel

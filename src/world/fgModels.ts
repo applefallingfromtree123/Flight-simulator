@@ -9,6 +9,8 @@ export interface FgModel {
   id: string; fdm: string; name: string; source: string; license: string;
   bounds: { min: [number, number, number]; max: [number, number, number] };
   groundY: number;
+  /** Pilot eye point (glTF frame), whether interior.gltf exists, and the number of live display faces (screens.json). */
+  eye?: [number, number, number]; interior?: boolean; screens?: number;
   poses: FgPose[]; spins: FgSpin[];
   defaultLivery: string; liveries: FgLivery[];
 }
@@ -18,7 +20,7 @@ export const FG_PREFIX = 'fg:';
 /** Converted models that would misrepresent the simulated type. */
 const EXCLUDE = new Set(['erj145']);
 /** Extra web aircraft ids that may use a model converted for another flight model. */
-const ALIAS: Record<string, string> = { c172: 'c172-classic' };
+const ALIAS: Record<string, string> = {};
 
 const byAircraft = new Map<string, FgModel>();
 

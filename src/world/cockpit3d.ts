@@ -13,7 +13,9 @@ import { airlinerPanel, efisPanel, fighterPanel, gaPanel, heliPanel, overheadArt
 
 type Src = 'pfd' | 'nd' | 'eicas' | 'six' | 'fcu' | 'art';
 /** A flat screen: centre, right and up unit vectors (body FRD), size in metres. `art` = static painted surface. */
-interface ScreenDef { src: Src; c: P3; r: P3; u: P3; w: number; h: number; art?: Art }
+interface ScreenDef { src: Src; c: P3; r: P3; u: P3; w: number; h: number; art?: Art; geom?: Cesium.Geometry }
+/** A display face of a real (FlightGear) cockpit: triangles in model frame (fwd, left, up) with 0..1 UVs (v down). */
+export interface FgScreenFace { kind: string; pos: number[]; uv: number[]; idx: number[] }
 const SCREEN_INSET = -0.01, ART_INSET = -0.004;
 interface Lever { node: string; kind: 'stick' | 'yoke' | 'thr' | 'coll'; idx?: number }
 
@@ -26,6 +28,8 @@ const tiltUp = (deg: number): P3 => [Math.sin(deg * Math.PI / 180), 0, -Math.cos
 
 export class Cockpit3D {
   model: Cesium.Model | null = null;
+  /** True while a cockpit (procedural deck or live screens of a real cockpit) is built. */
+  active = false;
   private screens: { def: ScreenDef; prim: Cesium.Primitive; material: Cesium.Material }[] = [];
   /** One GPU texture per source, shared by every screen showing it (e.g. both PFDs). */
   private textures = new Map<string, { tex: unknown; cv: HTMLCanvasElement; live: boolean }>();
@@ -51,21 +55,31 @@ export class Cockpit3D {
     for (const t of this.textures.values()) (t.tex as { destroy?: () => void }).destroy?.();
     this.screens = [];
     this.textures.clear();
+    this.active = false;
   }
 
-  async build(ac: Aircraft, eye: P3) {
+  /** Build the cockpit. With `fgFaces` (a real cockpit model is shown) only its displays are made live. */
+  async build(ac: Aircraft, eye: P3, fgFaces?: { faces: FgScreenFace[]; eyeModel: P3 }) {
     this.destroy();
     const d = ac.def;
     const kind = d.cockpit;
-    const { nodes, screens, levers } = kind === 'g1000' || kind === 'steam' ? buildGa(ac, eye) : kind === 'fighter' ? buildFighter(ac, eye) : kind === 'heli' ? buildHeli(ac, eye) : buildAirliner(ac, eye);
-    this.levers = levers;
-    this.pivots.clear();
-    for (const n of nodes) if (n.translation) this.pivots.set(n.name, n.translation);
-    const glb = writeGlb(nodes);
-    const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
-    this.model = await Cesium.Model.fromGltfAsync({ url, backFaceCulling: false, shadows: Cesium.ShadowMode.DISABLED });
-    this.model.show = false;
-    this.scene.primitives.add(this.model);
+    let screens: ScreenDef[];
+    if (fgFaces) {
+      screens = fgFaces.faces.map(f => ({ src: fgSource(f.kind, kind), c: [0, 0, 0], r: [0, 1, 0], u: [0, 0, -1], w: 0, h: 0, geom: faceGeometry(f, fgFaces.eyeModel) } as ScreenDef));
+      this.levers = [];
+    } else {
+      const built = kind === 'g1000' || kind === 'steam' ? buildGa(ac, eye) : kind === 'fighter' ? buildFighter(ac, eye) : kind === 'heli' ? buildHeli(ac, eye) : buildAirliner(ac, eye);
+      screens = built.screens;
+      this.levers = built.levers;
+      this.pivots.clear();
+      for (const n of built.nodes) if (n.translation) this.pivots.set(n.name, n.translation);
+      const glb = writeGlb(built.nodes);
+      const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+      this.model = await Cesium.Model.fromGltfAsync({ url, backFaceCulling: false, shadows: Cesium.ShadowMode.DISABLED });
+      this.model.show = false;
+      this.scene.primitives.add(this.model);
+    }
+    this.active = true;
     // offscreen avionics
     this.holder.innerHTML = '';
     const need = new Set(screens.map(s => s.src));
@@ -108,7 +122,7 @@ export class Cockpit3D {
       (material.uniforms as Record<string, unknown>).image = tex;
       if (def.art?.dim) (material.uniforms as Record<string, unknown>).color = new Cesium.Color(1, 1, 1, 1);
       const prim = this.scene.primitives.add(new Cesium.Primitive({
-        geometryInstances: new Cesium.GeometryInstance({ geometry: quad(def) }),
+        geometryInstances: new Cesium.GeometryInstance({ geometry: def.geom ?? quad(def) }),
         appearance: new Cesium.MaterialAppearance({ material, flat: true, translucent: false, faceForward: false, closed: false,
           renderState: { cull: { enabled: false }, depthTest: { enabled: true } } }),
         asynchronous: false, compressVertices: false, show: false,
@@ -120,9 +134,8 @@ export class Cockpit3D {
   /** Per frame. `mm` is the aircraft model matrix (same frame as the exterior model). */
   update(ac: Aircraft, av: AvData, mm: Cesium.Matrix4, show: boolean, dt: number, input: { pitch: number; roll: number; throttle: number[]; collective: number }, light = 1) {
     this.visible = show;
-    if (!this.model) return;
-    this.model.show = show;
-    Cesium.Matrix4.clone(mm, this.model.modelMatrix);
+    if (!this.active) return;
+    if (this.model) { this.model.show = show; Cesium.Matrix4.clone(mm, this.model.modelMatrix); }
     for (const s of this.screens) { s.prim.show = show; Cesium.Matrix4.clone(mm, s.prim.modelMatrix); }
     if (!show) return;
     // painted (unlit) surfaces follow the ambient light so they don't glow at night
@@ -131,7 +144,7 @@ export class Cockpit3D {
       this.light = k;
       for (const s of this.screens) if (s.def.art?.dim) (s.material.uniforms as Record<string, unknown>).color = new Cesium.Color(k, k, k, 1);
     }
-    if (this.model.ready) {
+    if (this.model?.ready) {
       for (const lv of this.levers) {
         const node = this.model.getNode(lv.node);
         const piv = this.pivots.get(lv.node);
@@ -159,6 +172,42 @@ export class Cockpit3D {
       try { (t.tex as { copyFrom(o: object): void }).copyFrom({ source: t.cv }); } catch { /* size changed mid-flight: ignore this frame */ }
     }
   }
+}
+
+/** Which live display goes on a real cockpit's screen. */
+function fgSource(kind: string, cockpit: Aircraft['def']['cockpit']): Src {
+  if (kind === 'PFD') return 'pfd';
+  if (kind === 'EICAS') return cockpit === 'g1000' ? 'nd' : 'eicas';
+  return 'nd';
+}
+
+/** Geometry of a real cockpit display face, nudged 8 mm towards the eye so it sits on top of the model's screen. */
+function faceGeometry(f: FgScreenFace, eye: P3): Cesium.Geometry {
+  const n = f.pos.length / 3;
+  const P = (i: number): P3 => [f.pos[i * 3], f.pos[i * 3 + 1], f.pos[i * 3 + 2]];
+  const a = P(f.idx[0]), b = P(f.idx[1]), c = P(f.idx[2]);
+  const u: P3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v: P3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  let nb: P3 = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+  const l = Math.hypot(...nb) || 1;
+  nb = mul(nb, 1 / l);
+  const toEye = (eye[0] - a[0]) * nb[0] + (eye[1] - a[1]) * nb[1] + (eye[2] - a[2]) * nb[2];
+  if (toEye < 0) nb = mul(nb, -1);
+  const pos = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) { const p = add(P(i), mul(nb, 0.008)); pos.set(p, i * 3); }
+  const st = new Float32Array(n * 2);
+  for (let i = 0; i < n; i++) { st[i * 2] = f.uv[i * 2]; st[i * 2 + 1] = 1 - f.uv[i * 2 + 1]; }
+  const normal = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) normal.set(nb, i * 3);
+  return new Cesium.Geometry({
+    attributes: {
+      position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+      normal: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: normal }),
+      st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: st }),
+    } as unknown as Cesium.GeometryAttributes,
+    indices: n > 65535 ? new Uint32Array(f.idx) : new Uint16Array(f.idx),
+    primitiveType: Cesium.PrimitiveType.TRIANGLES,
+    boundingSphere: Cesium.BoundingSphere.fromVertices(Array.from(pos)),
+  });
 }
 
 function quad(d: ScreenDef): Cesium.Geometry {
