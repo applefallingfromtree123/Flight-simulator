@@ -7,6 +7,7 @@ import { Controls, type AxisBind } from '../input/controls.ts';
 import type { ImagerySource } from '../world/scene.ts';
 import { KEY_HELP } from './help.ts';
 import { liveriesFor, getLivery } from '../world/liveries.ts';
+import { FG_PREFIX, fgLivery, fgModelFor } from '../world/fgModels.ts';
 import { SPECS } from '../sim/specs.ts';
 import { ACTIVITIES, loadBest, type Activity } from '../career/activities.ts';
 import { CLASS_LABEL, LICENCES, allowed, classOf, eligibleAircraft, generateJobs, jobTitle, licenceOf, loadCareer, newCareer, nextLicence, payloadPct, saveCareer, type CareerState, type Job } from '../career/career.ts';
@@ -153,7 +154,7 @@ export class Menu {
     const cats = [...new Set(AIRCRAFT.map(a => a.cat))];
     el.innerHTML = `<input id="acSearch" placeholder="기종 검색 (예: 737, A350, Cessna)" style="width:100%">` +
       cats.map(cat => `<div class="ac-cat">${CATEGORY_LABEL[cat]}</div>` + AIRCRAFT.filter(a => a.cat === cat).map(a =>
-        `<div class="ac-item ${a.id === this.cfg.aircraftId ? 'sel' : ''}" data-id="${a.id}" data-q="${(a.mfr + ' ' + a.name + ' ' + a.icao).toLowerCase()}"><span>${a.mfr} ${a.name}</span><small>${a.icao}</small></div>`).join('')).join('');
+        `<div class="ac-item ${a.id === this.cfg.aircraftId ? 'sel' : ''}" data-id="${a.id}" data-q="${(a.mfr + ' ' + a.name + ' ' + a.icao).toLowerCase()}"><span>${a.mfr} ${a.name}${fgModelFor(a.id) ? ' <b class="fgtag" title="FlightGear 실제 3D 모델 · 실제 항공사 도색">FG</b>' : ''}</span><small>${a.icao}</small></div>`).join('')).join('');
     el.querySelectorAll<HTMLElement>('.ac-item').forEach(it => it.onclick = () => {
       this.cfg.aircraftId = it.dataset.id!;
       const d = getAircraft(this.cfg.aircraftId);
@@ -173,10 +174,12 @@ export class Menu {
 
   private renderSpec() {
     const a = getAircraft(this.cfg.aircraftId);
+    const fgm = fgModelFor(a.id);
     const liv = getLivery(a, this.cfg.livery?.[a.id]);
+    const livName = fgm ? `${fgLivery(fgm, this.cfg.livery?.[a.id]).name} (실제 도색)` : `${liv.name} (${liv.reg})`;
     const x = SPECS[a.id];
     this.el.querySelector<HTMLElement>('#acSpec')!.innerHTML = `
-      <div class="spec-row"><div><h2>${a.name}</h2><div class="mfr">${a.mfr} · ${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao} · 도색: ${liv.name} (${liv.reg})</div></div>
+      <div class="spec-row"><div><h2>${a.name}</h2><div class="mfr">${a.mfr} · ${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao} · 도색: ${livName}</div></div>
       <button id="specMore">상세 제원 · 도색 선택 →</button></div>
       <div class="spec-grid">
         <div><span>전장 / 전폭</span>${a.L.toFixed(1)} / ${a.fdm === 'rotor' ? a.rotor!.D + ' (로터)' : a.b.toFixed(1)} m</div>
@@ -196,18 +199,25 @@ export class Menu {
     const AR = a.b * a.b / a.S;
     const thrust = a.eng.t === 'fan' || a.eng.t === 'jet' ? `${((a.eng.n * (a.eng.ab ?? a.eng.p) * 1000) / (a.m.mtow * 9.81)).toFixed(2)} (추력/중량)` : a.eng.t === 'none' ? '—' : `${((a.eng.n * a.eng.p) / a.m.mtow).toFixed(3)} kW/kg (출력/중량)`;
     const row = (k: string, v: string) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+    const fgm = fgModelFor(a.id);
     const livs = liveriesFor(a);
     const cur = getLivery(a, this.cfg.livery?.[a.id]).id;
+    const fgCur = fgm ? fgLivery(fgm, this.cfg.livery?.[a.id]).id : '';
+    const livHtml = fgm
+      ? `<div class="sec"><h3>도색 (리버리) — FlightGear 실제 도색</h3><div class="liv-list">
+        ${fgm.liveries.map(l => `<button class="liv ${l.id === fgCur ? 'sel' : ''}" data-liv="${FG_PREFIX}${l.id}"><span class="ln">${l.name}</span><span class="dim">${l.id}</span></button>`).join('')}
+        </div><p class="note">3D 모델과 도색: ${fgm.source} (${fgm.license}) — FlightGear 커뮤니티 제작 실제 기체 모델·항공사 텍스처.</p></div>`
+      : `<div class="sec"><h3>도색 (리버리)</h3><div class="liv-list">
+        ${livs.map(l => `<button class="liv ${l.id === cur ? 'sel' : ''}" data-liv="${l.id}">
+          <span class="sw"><i style="background:${l.body}"></i><i style="background:${(l.bands ?? [])[0]?.c ?? l.body}"></i><i style="background:${l.tail.bg}"></i><i style="background:${l.engine}"></i></span>
+          <span class="ln">${l.name}</span><span class="dim">${l.reg}</span></button>`).join('')}
+      </div><p class="note">도색은 실제 운항사의 색 배치·타이틀·꼬리날개 마크를 단순화해 재현한 것입니다.</p></div>`;
     el.innerHTML = `
       <div class="sec"><h3>${a.mfr} ${a.name}</h3>
         <p class="note">${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao}${x ? ` · 초도 비행 ${x.first}년` : ''}${a.seats ? ` · 좌석 ${a.seats}석` : ''}${x?.crew ? ` · 운항 승무원 ${x.crew}명` : ''}</p>
         ${a.note ? `<p class="note">${a.note}</p>` : ''}
       </div>
-      <div class="sec"><h3>도색 (리버리)</h3><div class="liv-list">
-        ${livs.map(l => `<button class="liv ${l.id === cur ? 'sel' : ''}" data-liv="${l.id}">
-          <span class="sw"><i style="background:${l.body}"></i><i style="background:${(l.bands ?? [])[0]?.c ?? l.body}"></i><i style="background:${l.tail.bg}"></i><i style="background:${l.engine}"></i></span>
-          <span class="ln">${l.name}</span><span class="dim">${l.reg}</span></button>`).join('')}
-      </div><p class="note">도색은 실제 운항사의 색 배치·타이틀·꼬리날개 마크를 단순화해 재현한 것입니다.</p></div>
+      ${livHtml}
       <div class="sec"><h3>치수</h3><table class="spec-t">
         ${row('전장', a.L.toFixed(2) + ' m')}${row(a.fdm === 'rotor' ? '로터 직경' : '전폭', (a.fdm === 'rotor' ? a.rotor!.D : a.b).toFixed(2) + ' m')}${row('전고', a.H.toFixed(2) + ' m')}
         ${a.fdm === 'rotor' ? row('로터 블레이드', `${a.rotor!.blades}개 · 꼬리 ${a.rotor!.tail}`) : row('날개 면적', a.S.toFixed(1) + ' m²') + row('가로세로비', AR.toFixed(1)) + row('후퇴각 (1/4 시위)', a.sweep + '°')}

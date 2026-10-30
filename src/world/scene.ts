@@ -8,6 +8,7 @@ import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
+import { fgLivery, fgModelFor, type FgModel } from './fgModels.ts';
 import { Cockpit3D } from './cockpit3d.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
@@ -36,6 +37,8 @@ export class World {
   readonly acMatrix = new Cesium.Matrix4();
   private modelNodes: ModelNodes | null = null;
   private propAngle: number[] = [];
+  /** Real FlightGear model in use (null = procedural model). */
+  private fg: { m: FgModel; off: Cesium.Cartesian3; angle: number[]; placed: boolean } | null = null;
   private lights: Cesium.PointPrimitiveCollection;
   private acLights: Cesium.PointPrimitive[] = [];
   private rwyLights: Cesium.PointPrimitiveCollection;
@@ -247,12 +250,29 @@ export class World {
   // ───────────────────────── aircraft model ─────────────────────────
   async loadAircraft(ac: Aircraft, liveryId?: string) {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
-    const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId), this.opts.quality === 'low' ? 0.5 : 1);
-    const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
-    this.model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, color: Cesium.Color.WHITE });
+    this.fg = null;
+    const fg = fgModelFor(ac.def.id);
+    if (fg) {
+      try {
+        const liv = fgLivery(fg, liveryId);
+        this.model = await Cesium.Model.fromGltfAsync({ url: `aircraft/${fg.id}/${liv.file}`, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
+        // FG models are built around the nose: put the CG (47 % of the length behind the nose) at the origin
+        // and the tyres on the ground at the gear's CG height (same placement as the Unreal version)
+        this.fg = { m: fg, off: new Cesium.Cartesian3(0, -ac.aero.cgHeight - fg.groundY, -(fg.bounds.max[2] - 0.47 * ac.def.L)), angle: fg.spins.map(() => 0), placed: false };
+        this.modelNodes = { props: [], gear: [] };
+      } catch (e) {
+        console.error('FlightGear model failed, using the procedural model', e);
+        this.model = null; this.fg = null;
+      }
+    }
+    if (!this.model) {
+      const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId), this.opts.quality === 'low' ? 0.5 : 1);
+      const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
+      this.model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, color: Cesium.Color.WHITE });
+      this.modelNodes = nodes;
+    }
     this.scene.primitives.add(this.model);
-    this.modelNodes = nodes;
-    this.propAngle = nodes.props.map(() => 0);
+    this.propAngle = this.modelNodes!.props.map(() => 0);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
     try { await this.cockpit3d.build(ac, this.eyePoint(ac)); }
@@ -311,7 +331,8 @@ export class World {
     Cesium.Matrix4.clone(this.model.modelMatrix, this.acMatrix);
     this.model.show = this.view !== 'cockpit' && this.view !== 'cockpit-hud';
     const nodes = this.modelNodes!;
-    if (this.model.ready) {
+    if (this.fg && this.model.ready) this.updateFgModel(ac, dt);
+    else if (this.model.ready) {
       const gear = nodes.gear.length ? this.model.getNode('gear') : undefined;
       if (gear) gear.show = ac.gearPos > 0.05;
       nodes.props.forEach((pr, i) => {
@@ -344,6 +365,50 @@ export class World {
     set(5, lightsState.beacon && flash(1.0, 0.5, 0.12), [0, 0, -def.dia * 0.55]);
     set(6, lightsState.beacon && flash(1.0, 0.0, 0.12), [0, 0, def.dia * 0.55]);
     set(7, lightsState.landing && this.view !== 'cockpit' && this.view !== 'cockpit-hud', [def.L * 0.1, 0, def.dia * 0.5]);
+  }
+
+  /** Gear/flap poses (show the nearest pre-posed node) and spinning props/rotors of a FlightGear model. */
+  private updateFgModel(ac: Aircraft, dt: number) {
+    const fg = this.fg!, model = this.model!, off = fg.off;
+    if (!fg.placed) {
+      fg.placed = true;
+      for (const name of ['Exterior', ...fg.m.poses.flatMap(p => p.nodes)]) {
+        const n = model.getNode(name);
+        if (n) n.matrix = Cesium.Matrix4.fromTranslation(off);
+      }
+    }
+    const flapMax = Math.max(1, ...ac.aero.flaps.map(f => f.deg));
+    for (const p of fg.m.poses) {
+      const v = p.group === 'gear' ? ac.gearPos : p.group === 'flaps' ? ac.flapPos / flapMax : 0;
+      let best = 0;
+      p.values.forEach((x, i) => { if (Math.abs(x - v) < Math.abs(p.values[best] - v)) best = i; });
+      p.nodes.forEach((name, i) => { const n = model.getNode(name); if (n) n.show = i === best; });
+    }
+    // Blade hinges/segments of a rotor come out of the converter as separate spins with their own (flap/feather)
+    // axes; they ride on the main rotor instead of spinning about those axes.
+    const mainRotor = fg.m.spins.findIndex(s => s.kind === 'rotor' && Math.abs(s.axis[1]) > 0.9);
+    const one = new Cesium.Cartesian3(1, 1, 1);
+    fg.m.spins.forEach((s, i) => {
+      const n = model.getNode(s.node);
+      if (!n) return;
+      const t = new Cesium.Cartesian3(s.pivot[0] + off.x, s.pivot[1] + off.y, s.pivot[2] + off.z);
+      if (s.kind === 'rotor' && mainRotor >= 0 && Math.abs(s.axis[1]) < 0.9) {
+        const m = fg.m.spins[mainRotor];
+        const q = Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(...m.axis), fg.angle[mainRotor]);
+        const hub = new Cesium.Cartesian3(m.pivot[0] + off.x, m.pivot[1] + off.y, m.pivot[2] + off.z);
+        const rel = Cesium.Cartesian3.subtract(t, hub, new Cesium.Cartesian3());
+        Cesium.Matrix3.multiplyByVector(Cesium.Matrix3.fromQuaternion(q), rel, rel);
+        n.matrix = Cesium.Matrix4.fromTranslationQuaternionRotationScale(Cesium.Cartesian3.add(hub, rel, rel), q, one);
+        return;
+      }
+      const e = ac.engines[Math.min(s.engine, ac.engines.length - 1)];
+      let rpm = s.kind === 'rotor' ? ac.rotorRpm * 390 : s.kind === 'tail' ? ac.rotorRpm * 2000 : e ? e.rpm : 0;
+      if (s.kind === 'prop' && e && e.def.t === 'tprop') rpm = e.np * 12;
+      const rate = Math.min(rpm / 60 * Math.PI * 2, s.kind === 'prop' ? 38 : 28); // cap to avoid strobing
+      fg.angle[i] = (fg.angle[i] + rate * dt) % (Math.PI * 2);
+      const q = Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(...s.axis), fg.angle[i]);
+      n.matrix = Cesium.Matrix4.fromTranslationQuaternionRotationScale(t, q, one);
+    });
   }
 
   // ───────────────────────── airport lighting (edge, centreline, approach, PAPI) ─────────────────────────

@@ -16,3 +16,4 @@ Unreal/SkyLine/.vs/
 Unreal/SkyLine/*.sln
 build/
 Unreal/SkyLine/Content/ImportSource/
+public/aircraft/

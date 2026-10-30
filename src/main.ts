@@ -18,6 +18,7 @@ import { HUD } from './avionics/hud.ts';
 import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
 import { AirportMap } from './world/worldMap.ts';
+import { loadFgModels } from './world/fgModels.ts';
 import { finishJob, saveCareer, type Job } from './career/career.ts';
 import { saveBest, scoreLanding, type Activity, type Touchdown } from './career/activities.ts';
 
@@ -71,6 +72,8 @@ class App {
     } catch (e) {
       throw new Error(`공항 데이터(data/airports.json)를 불러오지 못했습니다 — ${(e as Error).message}`);
     }
+    loading('실제 기체 모델 목록 불러오는 중…');
+    await loadFgModels();
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });

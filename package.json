@@ -15,7 +15,8 @@
     "test:sim": "cmake -S tests/sim -B build/sim -DCMAKE_BUILD_TYPE=Release && cmake --build build/sim -j && ./build/sim/flight_tests",
     "data": "node tools/build-data.mjs",
     "aircraft": "node tools/fgconv/convert.mjs",
-    "aircraft:ipad": "node tools/fgconv/convert.mjs --profile ipad"
+    "aircraft:ipad": "node tools/fgconv/convert.mjs --profile ipad",
+    "aircraft:web": "python3 tools/fgconv/web.py --out public/aircraft"
   },
   "dependencies": {
     "cesium": "^1.145.0"

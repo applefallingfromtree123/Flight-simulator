@@ -19,6 +19,13 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # Real FlightGear aircraft (tools/fgconv + tools/fgconv/web.py) live on their own branch to keep this one small
+      - uses: actions/checkout@v4
+        with:
+          ref: web-aircraft
+          path: public/aircraft
+        continue-on-error: true
+      - run: rm -rf public/aircraft/.git
       - run: npm ci
       - run: npm test
       - run: npx vite build

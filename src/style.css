@@ -209,3 +209,5 @@ table.log tr.diverted td { color: var(--warn); }
 .card.result h2 { color: var(--ok); }
 .res-pay { font-size: 30px; font-weight: 700; font-family: "B612 Mono", monospace; margin: 4px 0 8px; }
 .res-pay.ok { color: var(--ok); } .res-pay.bad { color: var(--err); }
+
+.fgtag { font-size: 9px; padding: 0 4px; border-radius: 3px; background: #1f6feb; color: #fff; margin-left: 4px; vertical-align: middle; }
