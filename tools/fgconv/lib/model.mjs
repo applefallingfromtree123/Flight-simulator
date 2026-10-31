@@ -162,6 +162,8 @@ export function makeState(setTree) {
       p = norm(p.trim());
       if (wild.test(p)) return WILD;
       if (overrides.has(p)) return overrides.get(p);
+      // cockpit parts that only show with electrical power (MCP digits, backlit legends): the panel is powered
+      if (/^systems\/electrical\/(outputs|volts|bus|ac|dc)\b|\/(serviceable|powered)$/.test(p) && !(st.overlay?.get(p) ?? setTree?.get(p))) return 28;
       const n = st.overlay?.get(p) ?? setTree?.get(p);
       if (!n || n.children.length) return '';
       const v = n.value.trim();
