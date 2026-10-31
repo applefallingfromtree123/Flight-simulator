@@ -428,7 +428,7 @@ export class World {
       if (!this.fg.interiorPlaced && it.ready) {
         this.fg.interiorPlaced = true;
         const n = it.getNode('Interior');
-        if (n) n.matrix = Cesium.Matrix4.fromTranslation(this.fg.off);
+        if (n) n.matrix = Cesium.Matrix4.multiply(Cesium.Matrix4.fromTranslation(this.fg.off), n.originalMatrix, new Cesium.Matrix4());
       }
     }
     const nodes = this.modelNodes!;
@@ -475,7 +475,7 @@ export class World {
       fg.placed = true;
       for (const name of ['Exterior', ...fg.m.poses.flatMap(p => p.nodes)]) {
         const n = model.getNode(name);
-        if (n) n.matrix = Cesium.Matrix4.fromTranslation(off);
+        if (n) n.matrix = Cesium.Matrix4.multiply(Cesium.Matrix4.fromTranslation(off), n.originalMatrix, new Cesium.Matrix4());
       }
     }
     const flapMax = Math.max(1, ...ac.aero.flaps.map(f => f.deg));
@@ -488,18 +488,21 @@ export class World {
     // Blade hinges/segments of a rotor come out of the converter as separate spins with their own (flap/feather)
     // axes; they ride on the main rotor instead of spinning about those axes.
     const mainRotor = fg.m.spins.findIndex(s => s.kind === 'rotor' && Math.abs(s.axis[1]) > 0.9);
-    const one = new Cesium.Cartesian3(1, 1, 1);
+    // node matrix = placement offset * rotation about the pivot * the node's own matrix (pivot, quantization)
+    const spinAbout = (n: Cesium.ModelNode, pivot: [number, number, number], axis: [number, number, number], angle: number) => {
+      const c = new Cesium.Cartesian3(...pivot);
+      const rot = Cesium.Matrix4.fromRotationTranslation(Cesium.Matrix3.fromQuaternion(Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(...axis), angle)));
+      const m = Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.add(c, off, new Cesium.Cartesian3()));
+      Cesium.Matrix4.multiply(m, rot, m);
+      Cesium.Matrix4.multiply(m, Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.negate(c, c)), m);
+      n.matrix = Cesium.Matrix4.multiply(m, n.originalMatrix, m);
+    };
     fg.m.spins.forEach((s, i) => {
       const n = model.getNode(s.node);
       if (!n) return;
-      const t = new Cesium.Cartesian3(s.pivot[0] + off.x, s.pivot[1] + off.y, s.pivot[2] + off.z);
       if (s.kind === 'rotor' && mainRotor >= 0 && Math.abs(s.axis[1]) < 0.9) {
         const m = fg.m.spins[mainRotor];
-        const q = Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(...m.axis), fg.angle[mainRotor]);
-        const hub = new Cesium.Cartesian3(m.pivot[0] + off.x, m.pivot[1] + off.y, m.pivot[2] + off.z);
-        const rel = Cesium.Cartesian3.subtract(t, hub, new Cesium.Cartesian3());
-        Cesium.Matrix3.multiplyByVector(Cesium.Matrix3.fromQuaternion(q), rel, rel);
-        n.matrix = Cesium.Matrix4.fromTranslationQuaternionRotationScale(Cesium.Cartesian3.add(hub, rel, rel), q, one);
+        spinAbout(n, m.pivot, m.axis, fg.angle[mainRotor]);
         return;
       }
       const e = ac.engines[Math.min(s.engine, ac.engines.length - 1)];
@@ -507,8 +510,7 @@ export class World {
       if (s.kind === 'prop' && e && e.def.t === 'tprop') rpm = e.np * 12;
       const rate = Math.min(rpm / 60 * Math.PI * 2, s.kind === 'prop' ? 38 : 28); // cap to avoid strobing
       fg.angle[i] = (fg.angle[i] + rate * dt) % (Math.PI * 2);
-      const q = Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(...s.axis), fg.angle[i]);
-      n.matrix = Cesium.Matrix4.fromTranslationQuaternionRotationScale(t, q, one);
+      spinAbout(n, s.pivot, s.axis, fg.angle[i]);
     });
   }
 

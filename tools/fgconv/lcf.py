@@ -207,10 +207,10 @@ def build(out, src_root='Unreal/SkyLine/Aircraft', max_px=1024):
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns('l', '*.gltf'))
     shutil.copy(os.path.join(src, 'interior.gltf'), dst) if os.path.exists(os.path.join(src, 'interior.gltf')) else None
     os.makedirs(os.path.join(dst, 'l'), exist_ok=True)
-    repaint(os.path.join(src_root, SRC_ID, 'Liveries', 'BOE_S0.png'), os.path.join(dst, 'l', 'DLF_0.jpg'), max_px * 2)
+    repaint(os.path.join(src_root, SRC_ID, 'Liveries', 'BOE_S0.png'), os.path.join(dst, 'l', 'DLF_0.jpg'), max(max_px, 2048))
 
     g = json.load(open(os.path.join(src, 'BOE.gltf')))
-    g['images'] = [{'uri': 'l/DLF_0.jpg'} if im.get('uri') == 'l/BOE_0.jpg' else im for im in g['images']]
+    g['images'] = [{'uri': 'l/DLF_0.jpg'} if im.get('uri', '').startswith('l/BOE_0.') else im for im in g['images']]
 
     pos, nrm, uv, idx, zs = build_hull()
     hull_texture(os.path.join(dst, 'l', 'hull.jpg'), zs)
@@ -240,7 +240,10 @@ def build(out, src_root='Unreal/SkyLine/Aircraft', max_px=1024):
     g['images'].append({'uri': 'l/hull.jpg'})
     g['textures'].append({'source': len(g['images']) - 1, 'sampler': 0})
     g['materials'].append({'name': 'LCF_hull', 'pbrMetallicRoughness': {'baseColorTexture': {'index': len(g['textures']) - 1},
-                           'metallicFactor': 0.0, 'roughnessFactor': 0.45}})
+                           'metallicFactor': 0.0, 'roughnessFactor': 0.32},
+                           'extensions': {'KHR_materials_clearcoat': {'clearcoatFactor': 0.6, 'clearcoatRoughnessFactor': 0.08}}})
+    if 'KHR_materials_clearcoat' not in g.setdefault('extensionsUsed', []):
+        g['extensionsUsed'].append('KHR_materials_clearcoat')
     g['meshes'].append({'name': 'LCF_Body', 'primitives': [{'attributes': {'POSITION': a0, 'NORMAL': a0 + 1, 'TEXCOORD_0': a0 + 2},
                                                              'indices': a0 + 3, 'material': len(g['materials']) - 1}]})
     g['nodes'].append({'name': 'LCF_Body', 'mesh': len(g['meshes']) - 1})

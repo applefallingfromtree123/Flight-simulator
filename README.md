@@ -9,7 +9,7 @@
 
 두 버전 모두 **자유 비행 · 커리어 · 액티비티(착륙 챌린지/디스커버리 비행)** 를 지원합니다.
 웹 버전도 언리얼 버전과 같은 **FlightGear 실제 3D 기체 모델과 실제 항공사 도색**(기종 목록에 **FG** 표시)을 쓰며, 랜딩기어 접힘·플랩 전개·프로펠러/로터 회전이 움직입니다. 조종석 시점에서는 **실제 조종석 모델**이 보이고, 그 화면(PFD·ND·EICAS)에 계기가 실시간으로 그려집니다.
-변환한 39종(A320ceo CFM/IAE·A320neo LEAP 변형, ERJ-145, 직접 만든 747-400LCF 드림리프터 포함)과 각 기체의 모든 도색이 들어 있습니다.
+변환한 45종(A320ceo CFM/IAE·A320neo LEAP 변형, ERJ-145, 737-700, King Air, C152, C182, Typhoon, DC-3, 직접 만든 747-400LCF 드림리프터 포함)과 각 기체의 모든 도색(2048px WebP)이 들어 있고, 형상은 meshopt로 압축되어 빨리 로드됩니다.
 그래픽 품질(설정 → 그래픽): 낮음 / 중간(HDR·대기 반사광) / 높음(레티나 해상도·MSAA·그림자·야간 블룸) / 울트라(최대 해상도·4K 그림자).
 변환된 모델은 `web-aircraft` 브랜치에 있고 Pages 배포 때 `public/aircraft` 로 들어갑니다. 다시 만들기: `npm run aircraft` → `npm run aircraft:web` (Python + Pillow) → 결과를 `web-aircraft` 브랜치에 커밋.
 웹 버전 개발: `npm install` → `npm run dev` (빌드 `npm run build`, 비행역학 테스트 `npm test`). `main` 또는 이 브랜치에 push하면 GitHub Actions가 Pages로 자동 배포합니다.

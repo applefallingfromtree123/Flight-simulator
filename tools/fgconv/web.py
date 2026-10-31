@@ -53,12 +53,10 @@ def encode(img_bytes, max_px, quality):
     if max(im.size) > max_px:
         s = max_px / max(im.size)
         im = im.resize((max(1, round(im.width * s)), max(1, round(im.height * s))), Image.LANCZOS)
+    # WebP: at the same file size as a JPEG of half the resolution (Safari/iPadOS 14+, Chrome, Firefox)
     out = io.BytesIO()
-    if alpha:
-        im.save(out, 'PNG', optimize=True)
-        return out.getvalue(), 'png'
-    im.save(out, 'JPEG', quality=quality, optimize=True, progressive=False)
-    return out.getvalue(), 'jpg'
+    im.save(out, 'WEBP', quality=quality, method=5, alpha_quality=90)
+    return out.getvalue(), 'webp'
 
 
 def subset(j0, bin_, keep_root, out_dir, tdir, bin_name, max_px, quality):
@@ -314,7 +312,14 @@ def screen_faces(j, bin_, man):
     return [{'kind': f['kind'], 'pos': [round(c, 5) for q in f['P'] for c in q], 'uv': [round(c, 5) for u in f['U'] for c in u], 'idx': f['idx']} for f in faces]
 
 
-def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
+def compress(gltf_path):
+    """meshopt-compress a .gltf in place (tools/fgconv/compress.mjs, glTF-Transform)."""
+    import subprocess
+    here = os.path.dirname(os.path.abspath(__file__))
+    subprocess.run(['node', os.path.join(here, 'compress.mjs'), gltf_path], check=True, stdout=subprocess.DEVNULL)
+
+
+def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px, livery_px):
     man = json.load(open(os.path.join(src_dir, 'manifest.json'), encoding='utf-8'))
     j, bin_ = read_glb(os.path.join(src_dir, man['glb']))
     os.makedirs(os.path.join(out_dir, 'l'), exist_ok=True)
@@ -327,13 +332,27 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
         if name.startswith('LIVERY'):
             pbr['roughnessFactor'] = min(pbr.get('roughnessFactor', 1), 0.32)
             pbr['metallicFactor'] = 0.0
+            # airliner paint has a glossy clear coat over the colour
+            m.setdefault('extensions', {})['KHR_materials_clearcoat'] = {'clearcoatFactor': 0.6, 'clearcoatRoughnessFactor': 0.08}
+            base.setdefault('extensionsUsed', [])
+            if 'KHR_materials_clearcoat' not in base['extensionsUsed']:
+                base['extensionsUsed'].append('KHR_materials_clearcoat')
         elif name.startswith('GLASS'):
             pbr['roughnessFactor'] = 0.05
+
+    # geometry compression (meshopt): the base glTF is compressed once, the livery glTFs are derived from it
+    tmp = os.path.join(out_dir, '_base.gltf')
+    json.dump(base, open(tmp, 'w'), separators=(',', ':'))
+    compress(tmp)
+    base = json.load(open(tmp))
+    os.remove(tmp)
+    mats, textures = base['materials'], base['textures']
 
     has_interior = any(n.get('name') == 'Interior' and 'mesh' in n for n in j['nodes'])
     if has_interior:
         inter = subset(j, bin_, lambda n: n == 'Interior', out_dir, 'ti', 'interior.bin', interior_px, quality)
         json.dump(tame_emissive(inter), open(os.path.join(out_dir, 'interior.gltf'), 'w'), separators=(',', ':'))
+        compress(os.path.join(out_dir, 'interior.gltf'))
         faces = screen_faces(j, bin_, man)
         if faces:
             json.dump(faces, open(os.path.join(out_dir, 'screens.json'), 'w'), separators=(',', ':'))
@@ -365,7 +384,7 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
             p = os.path.join(src_dir, rel)
             if not os.path.exists(p) or not slot_images.get(slot):
                 continue
-            data, ext = encode(open(p, 'rb').read(), max_px, quality)
+            data, ext = encode(open(p, 'rb').read(), livery_px, quality)
             name = f'l/{safe(l["id"])}_{slot}.{ext}'
             open(os.path.join(out_dir, name), 'wb').write(data)
             for im in slot_images[slot]:
@@ -427,17 +446,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--src', default='Unreal/SkyLine/Aircraft')
     ap.add_argument('--out', default='web-aircraft')
-    ap.add_argument('--max', type=int, default=1024)
+    ap.add_argument('--max', type=int, default=2048, help='exterior texture size cap (px)')
+    ap.add_argument('--livery-max', type=int, default=2048, help='livery texture size cap (px)')
     ap.add_argument('--interior-max', type=int, default=2048, help='cockpit texture size cap (px)')
     ap.add_argument('--liveries', type=int, default=0, help='max liveries per aircraft (0 = all)')
-    ap.add_argument('--quality', type=int, default=82)
+    ap.add_argument('--quality', type=int, default=80)
     ap.add_argument('ids', nargs='*')
     a = ap.parse_args()
     ids = a.ids or sorted(d for d in os.listdir(a.src) if os.path.exists(os.path.join(a.src, d, 'manifest.json')) and d not in SKIP)
     index = []
     for i in ids:
         try:
-            e = pack(os.path.join(a.src, i), os.path.join(a.out, i), a.max, a.liveries, a.quality, a.interior_max)
+            e = pack(os.path.join(a.src, i), os.path.join(a.out, i), a.max, a.liveries, a.quality, a.interior_max, a.livery_max)
             index.append(e)
             size = sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(os.path.join(a.out, i)) for f in fs)
             print(f'{i:14s} {len(e["liveries"]):3d} liveries  interior={e["interior"]} screens={e["screens"]:2d}  {size / 1e6:6.1f} MB')

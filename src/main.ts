@@ -35,6 +35,8 @@ function toast(msg: string) {
   setTimeout(() => d.remove(), 4000);
   while ($('toast').children.length > 4) $('toast').firstChild!.remove();
 }
+/** The cockpit toggle names what pressing it does, not the current mode. */
+function deckLabel(deck3d: boolean) { return deck3d ? '2D 패널로 보기' : '3D 조종석으로 보기'; }
 function loading(text: string | null) {
   $('loading').classList.toggle('hidden', text === null);
   if (text) $('loadingText').textContent = text;
@@ -88,7 +90,7 @@ class App {
     };
     this.hud = new HUD($('hudLayer'));
     this.world.deck3d = s.deck3d;
-    $('btnDeck').textContent = s.deck3d ? '3D 조종석' : '2D 패널';
+    $('btnDeck').textContent = deckLabel(s.deck3d);
     this.sound.volume = s.volume;
     this.menu.onFly = c => { this.sound.init(); this.careerJob = null; this.activity = null; void this.startFlight(c); };
     this.menu.onActivity = (c, a) => { this.sound.init(); this.careerJob = null; this.activity = a; void this.startFlight(c); };
@@ -457,7 +459,7 @@ class App {
     $('btnDeck').onclick = () => {
       this.world.deck3d = !this.world.deck3d;
       this.menu.settings.deck3d = this.world.deck3d; this.menu.saveSettings();
-      $('btnDeck').textContent = this.world.deck3d ? '3D 조종석' : '2D 패널';
+      $('btnDeck').textContent = deckLabel(this.world.deck3d);
       this.world.head.pitch = this.defaultHeadPitch();
       if (this.world.view !== 'cockpit') this.setView('cockpit'); else this.layout();
     };

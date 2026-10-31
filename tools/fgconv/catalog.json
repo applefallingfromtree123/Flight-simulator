@@ -38,6 +38,12 @@
   {"id": "h135", "name": "Eurocopter EC135 P2", "dir": "ec135", "set": "ec135p2-set.xml", "fdm": "h135", "ipad": true},
   {"id": "r44", "name": "Robinson R44 Raven", "dir": "R44", "set": "raven-set.xml", "fdm": "r44", "ipad": true},
   {"id": "uh60", "name": "Sikorsky UH-60 Black Hawk", "dir": "UH-60", "set": "uh60-set.xml", "fdm": "uh60"},
-  {"id": "ch47", "name": "Boeing CH-47 Chinook", "dir": "ch47", "set": "ch47-set.xml", "fdm": "ch47"}
+  {"id": "ch47", "name": "Boeing CH-47 Chinook", "dir": "ch47", "set": "ch47-set.xml", "fdm": "ch47"},
+  {"id": "b737-700", "name": "Boeing 737-700", "dir": "737NG", "set": "737-700-set.xml", "fdm": "b737-700"},
+  {"id": "kingair350", "name": "Beechcraft King Air", "dir": "Beechcraft-King-Air", "set": "kingair-set.xml", "fdm": "kingair350"},
+  {"id": "c152", "name": "Cessna 152", "dir": "c152", "set": "c152-set.xml", "fdm": "c152"},
+  {"id": "c182", "name": "Cessna 182S", "dir": "c182s", "set": "c182s-set.xml", "fdm": "c182"},
+  {"id": "typhoon", "name": "Eurofighter Typhoon", "dir": "eurofighter", "set": "typhoon-set.xml", "fdm": "typhoon"},
+  {"id": "dc3", "name": "Douglas DC-3", "dir": "Douglas-Dc3", "set": "dc-3-set.xml", "fdm": "dc3"}
  ]
 }
