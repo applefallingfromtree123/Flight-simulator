@@ -1,1 +1,195 @@
-{"asset":{"version":"2.0","generator":"SkyLine fgconv/web.py"},"scene":0,"scenes":[{"nodes":[1]}],"nodes":[{"name":"Exterior"},{"name":"Interior","mesh":0}],"meshes":[{"name":"Interior","primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0}]}],"materials":[{"name":"DefaultWhite_21","pbrMetallicRoughness":{"baseColorFactor":[1,1,1,1],"metallicFactor":0,"roughnessFactor":0.675},"doubleSided":true}],"textures":[],"images":[],"samplers":[{"magFilter":9729,"minFilter":9987,"wrapS":10497,"wrapT":10497}],"accessors":[{"bufferView":0,"componentType":5126,"count":18988,"type":"VEC3","min":[-2.95797061920166,5.8436970710754395,-20.010725021362305],"max":[2.957970142364502,8.325780868530273,25.244298934936523]},{"bufferView":1,"componentType":5126,"count":18988,"type":"VEC3"},{"bufferView":2,"componentType":5126,"count":18988,"type":"VEC2"},{"bufferView":3,"componentType":5125,"count":68202,"type":"SCALAR"}],"bufferViews":[{"byteLength":227856,"target":34962,"buffer":0,"byteOffset":0},{"byteLength":227856,"target":34962,"buffer":0,"byteOffset":227856},{"byteLength":151904,"target":34962,"buffer":0,"byteOffset":455712},{"byteLength":272808,"target":34963,"buffer":0,"byteOffset":607616}],"buffers":[{"uri":"interior.bin","byteLength":880424}]}
+{
+  "asset": {
+    "generator": "glTF-Transform v4.5.1",
+    "version": "2.0"
+  },
+  "accessors": [
+    {
+      "type": "SCALAR",
+      "componentType": 5123,
+      "count": 68202,
+      "normalized": false,
+      "byteOffset": 0,
+      "bufferView": 0
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5122,
+      "count": 18988,
+      "max": [
+        4284,
+        1796,
+        32767
+      ],
+      "min": [
+        -4284,
+        -1796,
+        -32767
+      ],
+      "normalized": true,
+      "byteOffset": 0,
+      "bufferView": 1
+    },
+    {
+      "type": "VEC3",
+      "componentType": 5122,
+      "count": 18988,
+      "normalized": true,
+      "byteOffset": 0,
+      "bufferView": 2
+    },
+    {
+      "type": "VEC2",
+      "componentType": 5123,
+      "count": 18988,
+      "normalized": true,
+      "byteOffset": 0,
+      "bufferView": 3
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 1,
+      "byteOffset": 0,
+      "byteLength": 136404,
+      "target": 34963,
+      "extensions": {
+        "EXT_meshopt_compression": {
+          "buffer": 0,
+          "byteOffset": 0,
+          "byteLength": 25545,
+          "mode": "TRIANGLES",
+          "byteStride": 2,
+          "count": 68202
+        }
+      }
+    },
+    {
+      "buffer": 1,
+      "byteOffset": 136404,
+      "byteLength": 151904,
+      "target": 34962,
+      "byteStride": 8,
+      "extensions": {
+        "EXT_meshopt_compression": {
+          "buffer": 0,
+          "byteOffset": 25548,
+          "byteLength": 70865,
+          "mode": "ATTRIBUTES",
+          "byteStride": 8,
+          "count": 18988
+        }
+      }
+    },
+    {
+      "buffer": 1,
+      "byteOffset": 288308,
+      "byteLength": 151904,
+      "target": 34962,
+      "byteStride": 8,
+      "extensions": {
+        "EXT_meshopt_compression": {
+          "buffer": 0,
+          "byteOffset": 96416,
+          "byteLength": 93383,
+          "mode": "ATTRIBUTES",
+          "byteStride": 8,
+          "count": 18988
+        }
+      }
+    },
+    {
+      "buffer": 1,
+      "byteOffset": 440212,
+      "byteLength": 75952,
+      "target": 34962,
+      "byteStride": 4,
+      "extensions": {
+        "EXT_meshopt_compression": {
+          "buffer": 0,
+          "byteOffset": 189800,
+          "byteLength": 1221,
+          "mode": "ATTRIBUTES",
+          "byteStride": 4,
+          "count": 18988
+        }
+      }
+    }
+  ],
+  "buffers": [
+    {
+      "uri": "interior.bin",
+      "byteLength": 191024
+    },
+    {
+      "byteLength": 516164,
+      "extensions": {
+        "EXT_meshopt_compression": {
+          "fallback": true
+        }
+      }
+    }
+  ],
+  "materials": [
+    {
+      "name": "DefaultWhite_21",
+      "doubleSided": true,
+      "pbrMetallicRoughness": {
+        "roughnessFactor": 0.675,
+        "metallicFactor": 0
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Interior",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 1,
+            "NORMAL": 2,
+            "TEXCOORD_0": 3
+          },
+          "mode": 4,
+          "material": 0,
+          "indices": 0
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "Exterior"
+    },
+    {
+      "name": "Interior",
+      "translation": [
+        -2.384185791015625e-7,
+        7.0847389698028564,
+        2.6167869567871094
+      ],
+      "scale": [
+        22.627511978149414,
+        22.627511978149414,
+        22.627511978149414
+      ],
+      "mesh": 0
+    }
+  ],
+  "scenes": [
+    {
+      "nodes": [
+        1
+      ]
+    }
+  ],
+  "scene": 0,
+  "extensionsUsed": [
+    "EXT_meshopt_compression",
+    "KHR_mesh_quantization"
+  ],
+  "extensionsRequired": [
+    "EXT_meshopt_compression",
+    "KHR_mesh_quantization"
+  ]
+}
