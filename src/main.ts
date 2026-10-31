@@ -114,7 +114,7 @@ class App {
       this.world.opts = { ...this.world.opts, ...st };
       this.world.setImagery(st.imagery);
       this.world.applyGraphics(st.quality, st.shadows);
-      if (st.photoreal && st.googleKey) void this.world.enablePhotoreal(st.googleKey);
+      if (st.photoreal && (st.googleKey || st.ionToken)) void this.world.enablePhotoreal(st.googleKey || undefined);
       else this.world.disablePhotoreal();
       toast('설정 저장됨');
     };

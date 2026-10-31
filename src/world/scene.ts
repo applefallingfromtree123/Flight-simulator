@@ -117,7 +117,7 @@ export class World {
     this.runways = new RunwayRenderer(s, db);
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
-    if (opts.photoreal && opts.googleKey) this.enablePhotoreal(opts.googleKey);
+    if (opts.photoreal && (opts.googleKey || opts.ionToken)) this.enablePhotoreal(opts.googleKey);
   }
 
   private tier = 1;
@@ -232,13 +232,22 @@ export class World {
   }
 
   private photorealGen = 0;
-  async enablePhotoreal(key: string) {
+  /** Google Photorealistic 3D Tiles: straight from Google with a Maps API key, otherwise through Cesium ion with the ion token. */
+  async enablePhotoreal(key?: string) {
     const gen = ++this.photorealGen;
+    const viaIon = !key;
+    const src = viaIon ? 'Cesium ion 3D 도시' : 'Google 3D Tiles';
+    if (viaIon) {
+      if (!this.opts.ionToken) { this.onRenderIssue('3D 도시: Google 키나 Cesium ion 토큰이 필요합니다', false); return; }
+      Cesium.Ion.defaultAccessToken = this.opts.ionToken.trim();
+    }
     // never leave the ground blank: keep the globe visible until the tileset has proven it can
     // actually render content (a valid-looking tileset.json can still fail every tile request —
     // wrong API restriction, billing not enabled, quota — which used to hide the globe over nothing)
     try {
-      const tileset = await Cesium.createGooglePhotorealistic3DTileset({ key }, { maximumScreenSpaceError: 12, cacheBytes: 1024 * 1024 * 1024 });
+      // no geocoder is used anywhere in the app, so the Google-geocoder-only condition holds
+      const tileset = await Cesium.createGooglePhotorealistic3DTileset(viaIon ? { onlyUsingWithGoogleGeocoder: true } : { key, onlyUsingWithGoogleGeocoder: true },
+        { maximumScreenSpaceError: this.tier >= 3 ? 8 : 12, cacheBytes: 512 * 1024 * 1024 });
       if (gen !== this.photorealGen) { tileset.destroy(); return; } // superseded while awaiting
       this.scene.primitives.add(tileset);
       this.tileset = tileset;
@@ -259,11 +268,12 @@ export class World {
         this.scene.primitives.remove(tileset);
         if (this.tileset === tileset) this.tileset = null;
         this.scene.globe.show = true;
-        this.onRenderIssue(`Google 3D Tiles를 불러오지 못했습니다${failed > 0 ? ' (API 키의 결제·권한 확인)' : ' (응답 없음 — 네트워크 확인)'} — 일반 지형으로 전환`, false);
+        const why = viaIon ? ' (ion 토큰 확인 · ion Asset Depot에서 Google Photorealistic 3D Tiles를 My Assets에 추가)' : ' (API 키의 결제·권한 확인)';
+        this.onRenderIssue(`${src}를 불러오지 못했습니다${failed > 0 ? why : ' (응답 없음 — 네트워크 확인)'} — 일반 지형으로 전환`, false);
       }, 12000);
     } catch (e) {
       console.warn('Photorealistic 3D Tiles failed', e);
-      if (gen === this.photorealGen) this.onRenderIssue('Google 3D Tiles 초기화 실패 — 일반 지형으로 전환', false);
+      if (gen === this.photorealGen) this.onRenderIssue(`${src} 초기화 실패${viaIon ? ' (ion 토큰 확인)' : ''} — 일반 지형으로 전환`, false);
     }
   }
   /** Turn photorealistic 3D tiles back off and restore the normal globe. */

@@ -500,7 +500,7 @@ export class Menu {
         <div class="field"><label>Cesium ion 액세스 토큰</label><input id="ion" value="${s.ionToken}" placeholder="eyJ... (ion.cesium.com 무료 가입 → Access Tokens)"></div>
         <div class="field"><label>Google Maps Platform API 키 (Google 위성지도 · 3D 도시에 사용)</label>
           <input id="gkey" value="${s.googleKey}" placeholder="AIza... (Google Cloud 콘솔에서 Map Tiles API 활성화)"></div>
-        <div class="field"><label><input type="checkbox" id="pr" ${s.photoreal ? 'checked' : ''}> Google Photorealistic 3D Tiles (실사 3D 도시 · 포토그래메트리, 같은 키 사용)</label></div>
+        <div class="field"><label><input type="checkbox" id="pr" ${s.photoreal ? 'checked' : ''}> 실사 3D 도시 (Google Photorealistic 3D Tiles · 포토그래메트리) — Google 키가 없으면 Cesium ion 토큰으로</label></div>
         <p class="note">
           위성지도 원본을 <b>무료로</b> 더 받을 수 있는 방법:<br>
           • <b>Esri World Imagery</b> (기본) — Maxar 등 상용 위성사진, 키 없이 바로 사용. 대부분 지역에서 이미 Google 지도와 비슷한 해상도입니다.<br>
@@ -509,7 +509,10 @@ export class Menu {
           • <b>Google 위성지도</b> — Google Cloud 계정과 결제수단 등록이 필요한 대신(무료 사용량 있음), 최신 갱신 빈도가 가장 좋습니다.<br>
           키가 없거나 잘못되면 자동으로 Esri로 되돌아갑니다.
         </p>
-        <p class="note">지형 고도는 AWS Terrain Tiles(SRTM 기반, 전 세계)를 실시간 스트리밍하며, 활주로는 실제 활주로 좌표/표고로 평탄화됩니다. Google 3D 타일을 켜면 MSFS의 포토그래메트리 도시와 유사한 실사 3D 지형·건물이 표시됩니다.</p>
+        <p class="note">지형 고도는 AWS Terrain Tiles(SRTM 기반, 전 세계)를 실시간 스트리밍하며, 활주로는 실제 활주로 좌표/표고로 평탄화됩니다. 실사 3D 도시를 켜면 MSFS의 포토그래메트리 도시와 유사한 실사 3D 지형·건물이 표시됩니다.</p>
+        <p class="note"><b>Cesium ion 토큰으로 3D 도시 켜기</b> (카드 불필요): ① <a href="https://ion.cesium.com/signup" target="_blank" rel="noopener">ion.cesium.com</a> 무료 가입
+          ② Access Tokens에서 Default Token 복사 → 위 칸에 붙여넣기 ③ "실사 3D 도시" 체크 → 저장.
+          불러오지 못하면 ion의 <b>Asset Depot</b>에서 "Google Photorealistic 3D Tiles"를 찾아 <b>Add to my assets</b>를 누른 뒤 다시 저장하세요.</p>
       </div>
       <div class="sec"><h3>그래픽 · 사운드</h3>
         <div class="frow"><div class="field"><label>품질</label><select id="q"><option value="low">낮음</option><option value="medium">중간</option><option value="high">높음 (레티나 해상도 · MSAA · 그림자)</option><option value="ultra">울트라 (최대 해상도 · 4K 그림자)</option></select></div>
@@ -559,6 +562,7 @@ export class Menu {
       s.googleKey = $<HTMLInputElement>('gkey').value.trim();
       if (s.googleKey && !oldKey && s.imagery === 'esri') s.imagery = 'google'; // new key -> use Google imagery
       s.photoreal = $<HTMLInputElement>('pr').checked;
+      if (s.photoreal && !s.googleKey && !s.ionToken) alert('실사 3D 도시를 켜려면 Cesium ion 토큰(무료) 또는 Google 키를 넣어주세요.');
       s.quality = ($('q') as HTMLSelectElement).value as never;
       s.shadows = ($('sh') as HTMLSelectElement).value === '1';
       s.autoMixture = $<HTMLInputElement>('mix').checked;
