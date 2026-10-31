@@ -162,7 +162,7 @@ async function convert(entry) {
     return { id, interior: p.interior };
   };
   // Static exterior/interior, plus animated gear/flap poses and spinning props/rotors as separate nodes.
-  const isStatic = p => p.interior || (!p.group && !p.spin);
+  const isStatic = p => !p.live && (p.interior || (!p.group && !p.spin));
   const base = buildBuckets(model.parts.filter(isStatic), materialKeyOf);
   let tris = base.tris;
   const meshes = [];  // { name, buckets, translation? }
@@ -196,6 +196,42 @@ async function convert(entry) {
     meshes.push({ name, buckets: r.buckets, translation: pivot });
     spins.push({ node: name, pivot, axis: [-s.axis[1], s.axis[2], -s.axis[0]], kind: s.kind, engine: s.engine });
   }
+  // Live parts (yokes, sidesticks, throttles, gauge needles, control surfaces) move with the simulation;
+  // MCP/FCU window digits (textranslate) become one pre-shifted copy per digit, the runtime shows the right one.
+  const fg2gl = v => [-v[1], v[2], -v[0]];
+  const live = [], texLive = [];
+  for (const g of model.live) {
+    const r = buildBuckets(g.parts, materialKeyOf);
+    if (!r.buckets.length) continue;
+    tris += r.tris;
+    const interior = g.parts.some(p => p.interior);
+    const name = `${interior ? 'I' : 'X'}Live_${live.length}`;
+    meshes.push({ name, buckets: r.buckets });
+    live.push({ node: name, interior, anims: g.anims.map(({ a, center, axis }) => ({
+      type: a.type, prop: a.live, center: fg2gl(center), axis: fg2gl(axis), factor: a.factor, offset: a.offset,
+      min: Number.isFinite(a.min) ? a.min : null, max: Number.isFinite(a.max) ? a.max : null, interp: a.interp })) });
+  }
+  for (const g of model.texLive) {
+    const a = g.anim;
+    const cell = Math.abs((a.step || 0) * a.factor);
+    const n = cell > 0 ? Math.round(1 / cell) : 20;
+    if (n < 2 || n > 40) continue;
+    const interior = g.parts.some(p => p.interior);
+    const nodes = [];
+    for (let k = 0; k < n; k++) {
+      const r = buildBuckets(g.parts, materialKeyOf);
+      if (!r.buckets.length) break;
+      if (k === 0) tris += r.tris;
+      // texture shift k cells along the drum (glTF v runs downwards: FG +v is glTF -v)
+      const du = a.axis[0] * k / n, dv = -a.axis[1] * k / n;
+      for (const b of r.buckets) for (let i = 0; i < b.uv.length; i += 2) { b.uv[i] += du; b.uv[i + 1] += dv; }
+      const name = `${interior ? 'I' : 'X'}Tex_${texLive.length}_${k}`;
+      meshes.push({ name, buckets: r.buckets });
+      nodes.push(name);
+    }
+    if (nodes.length === n) texLive.push({ nodes, interior, prop: a.live, factor: a.factor, step: a.step, offset: a.offset, bias: a.bias, n });
+  }
+  console.log(`  live: ${live.length} moving parts (${live.filter(l => l.interior).length} in the cockpit), ${texLive.length} digit windows`);
   const buckets = meshes.flatMap(m => m.buckets);
   console.log(`  ${tris.toLocaleString()} triangles · ${poses.map(p => `${p.group} ${p.objects} parts`).join(', ') || 'no poses'} · ${spins.length} spinning parts`);
 
@@ -241,7 +277,7 @@ async function convert(entry) {
   // bounds (exterior only) in glTF space
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
   for (const m of meshes) {
-    if (m.name === 'Interior' || (m.name.startsWith('Pose_') && !m.pose)) continue;
+    if (m.name === 'Interior' || /^I(Live|Tex)_|^XTex_\d+_[1-9]/.test(m.name) || (m.name.startsWith('Pose_') && !m.pose)) continue;
     const t = m.translation ?? [0, 0, 0];
     for (const b of m.buckets) for (let i = 0; i < b.pos.length; i++) {
       const c = i % 3, v = b.pos[i] + t[c];
@@ -284,7 +320,7 @@ async function convert(entry) {
     bounds: { min, max }, groundY: min[1],
     eye: eye ? [-eye.num('x-offset-m'), eye.num('y-offset-m'), -eye.num('z-offset-m')] : null,
     slots: model.slots.map(s => ({ index: s.index, property: s.key, materials: slotMaterials.get(s.index) })),
-    poses, spins,
+    poses, spins, live, texLive,
     screens: Object.entries(screens).map(([kind, materials]) => ({ kind, materials })),
     defaultLivery: def?.id ?? null,
     liveries: livOut,

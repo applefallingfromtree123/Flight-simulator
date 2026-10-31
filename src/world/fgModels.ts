@@ -5,13 +5,22 @@
 export interface FgPose { group: string; values: number[]; nodes: string[] }
 export interface FgSpin { node: string; pivot: [number, number, number]; axis: [number, number, number]; kind: 'prop' | 'rotor' | 'tail'; engine: number }
 export interface FgLivery { id: string; name: string; file: string }
+/** A transform of a live part (model space, glTF frame), FlightGear rotate/translate semantics. */
+export interface FgLiveAnim {
+  type: 'rotate' | 'translate'; prop: string; center: [number, number, number]; axis: [number, number, number];
+  factor: number; offset: number; min: number | null; max: number | null; interp: [number, number][] | null;
+}
+/** A part moved by the simulation (yoke, throttle, needle, control surface); anims innermost first. */
+export interface FgLive { node: string; interior: boolean; anims: FgLiveAnim[] }
+/** A digit window: one pre-shifted copy per digit, the one for the current value is shown. */
+export interface FgTexLive { nodes: string[]; interior: boolean; prop: string; factor: number; step: number; offset: number; bias: number; n: number }
 export interface FgModel {
   id: string; fdm: string; name: string; source: string; license: string;
   bounds: { min: [number, number, number]; max: [number, number, number] };
   groundY: number;
   /** Pilot eye point (glTF frame), whether interior.gltf exists, and the number of live display faces (screens.json). */
   eye?: [number, number, number]; interior?: boolean; screens?: number;
-  poses: FgPose[]; spins: FgSpin[];
+  poses: FgPose[]; spins: FgSpin[]; live?: FgLive[]; texLive?: FgTexLive[];
   defaultLivery: string; liveries: FgLivery[];
 }
 

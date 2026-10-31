@@ -667,6 +667,18 @@ void ASkyLineAircraftPawn::CreatePartComponents()
 		}
 		Poses.Add(MoveTemp(P));
 	}
+	// Parts the converter exports separately for the web cockpit (yokes, levers, needles, control surfaces, MCP
+	// digit copies): shown here in their rest pose, digit windows with their first copy.
+	for (const TPair<FString, UStaticMesh*>& N : Model.Nodes)
+	{
+		const FString& Name = N.Key;
+		const bool bLive = Name.StartsWith(TEXT("XLive_")) || Name.StartsWith(TEXT("ILive_"));
+		const bool bDigit = (Name.StartsWith(TEXT("XTex_")) || Name.StartsWith(TEXT("ITex_"))) && Name.EndsWith(TEXT("_0"));
+		if ((bLive || bDigit) && N.Value)
+		{
+			Make(N.Value, MeshOffset);
+		}
+	}
 	for (const FSkyLineSpin& S : Entry->Spins)
 	{
 		if (UStaticMesh** Mesh = Model.Nodes.Find(S.Node))

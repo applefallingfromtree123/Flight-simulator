@@ -571,6 +571,22 @@ class App {
 
     // ── render ──
     const w = this.world;
+    // values the real cockpit's levers, sticks, needles and MCP windows follow (FlightGear property semantics)
+    {
+      const fbwStick = ac.def.fbw === 'airbus';
+      const roll = fbwStick ? c.roll : ac.cmd.da, pitch = fbwStick ? c.pitch : ac.cmd.de;
+      const lv: Record<string, number> = {
+        aileron: roll, 'aileron-abs': Math.abs(roll), elevator: -pitch, rudder: c.yaw, 'elevator-trim': ac.trim, speedbrake: ac.speedbrake,
+        mixture: ac.engineCmd[0]?.mixture ?? 1, 'prop-lever': 1, 'gear-lever': ac.gearDown ? 1 : 0,
+        'ap-spd': f.selSpd, 'ap-mach': f.selMach, 'ap-hdg': f.selHdg, 'ap-alt': f.selAlt, 'ap-vs': f.selVs,
+        ias: ac.ias / KT, alt: ac.alt / FT, pitch: ac.theta * RAD, roll: ac.phi * RAD, hdg: wrap360(ac.psi * RAD),
+        vs: ac.vs / FT * 60, turn: ac.w[2] * RAD / 3, slip: clamp(ac.ny * 4, -1, 1),
+        'aileron-pos': ac.da, 'aileron-pos-r': -ac.da, 'elevator-pos': -ac.de, 'rudder-pos': ac.dr,
+      };
+      ac.engineCmd.forEach((e, i) => { lv['throttle' + i] = e.throttle; });
+      ac.engines.forEach((e, i) => { lv['rpm' + i] = e.rpm; });
+      w.liveValues = lv;
+    }
     const lightsOn = { nav: s.sw.nav && s.elecPowered, beacon: s.sw.beacon && s.elecPowered, strobe: s.sw.strobe && s.elecPowered, landing: (s.sw.landing || s.sw.taxi) && s.elecPowered };
     w.updateAircraft(ac, running ? dtReal * rate : 0, lightsOn, performance.now() / 1000);
     w.cockpit3d.update(ac, this.av, w.acMatrix, w.view === 'cockpit' && w.deck3d, dtReal,

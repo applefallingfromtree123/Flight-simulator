@@ -10,7 +10,7 @@ import { ident, mul, fromRot3Loc, xform, translate, rotate, AC_TO_FG, offsetsMat
 
 const dirOf = f => path.posix.dirname(normalize(f));
 
-const SKIP_SUBMODEL = /(^|\/)(Human|Humans|Pilot|Pilots|Crew|Walker|Autopush|Pushback|Ground|GroundServices|Services|Stairs|Tug|Lights?)(\/|$)|pilot|walker|autopush|pushback|tug\.xml|stairs|catering|fuel-?truck|gpu\.xml|[-_]light\.xml|beacon|strobe|halo|procedural_light|tow-?bar|Effects\/lights?|landing-?light|light-?cone|light-?beam/i;
+const SKIP_SUBMODEL = /(^|\/)(Human|Humans|Pilot|Pilots|Crew|Walker|Autopush|Pushback|Ground|GroundServices|Services|Stairs|Tug|Lights?)(\/|$)|(?<!auto)pilot|walker|autopush|pushback|tug\.xml|stairs|catering|fuel-?truck|gpu\.xml|[-_]light\.xml|beacon|strobe|halo|procedural_light|tow-?bar|Effects\/lights?|landing-?light|light-?cone|light-?beam/i;
 const SKIP_OBJECT = /screen[._-]?off|^off$|^display[._-]?off|\.flare$|\.spot$|halo|glow|light[-_.]?cone|lightmap-only|^beacon|^strobe|^nav[-_]?light|landing[-_]?light[-_]?(beam|cone)|^shadow$|^shadow\./i;
 
 export class Instance {
@@ -37,13 +37,74 @@ const SPIN_PROP = /rotors?\/(main|tail)|propeller|\brpm\b|engines\/engine(\[\d+\
 // FlightGear rotate animations turn right-handed about their axis (simgear SGRotateTransform).
 const ROT_SIGN = 1;
 
-function parseTransformAnim(node, type, inst) {
+/**
+ * Properties the simulator drives live (the web scene animates parts bound to them): flight controls, throttles,
+ * autopilot selections shown in MCP/FCU windows, the classic instruments, and control surfaces.
+ * Returns the id the runtime knows the value by, or null.
+ */
+export function liveProp(prop) {
+  const p = prop.trim().replace(/^\/+/, '').replace(/\[0\]/g, '');
+  const eng = /engines\/engine(?:\[(\d+)\])?\//.exec(p)?.[1] ?? '0';
+  const table = [
+    [/^controls\/flight\/aileron$/, 'aileron'], [/^controls\/flight\/elevator$/, 'elevator'], [/^controls\/flight\/rudder$/, 'rudder'],
+    [/^controls\/flight\/elevator-trim$/, 'elevator-trim'], [/^controls\/flight\/speedbrake$/, 'speedbrake'],
+    [/^controls\/engines\/engine(\[\d+\])?\/throttle$/, 'throttle' + eng], [/^controls\/engines\/engine(\[\d+\])?\/mixture$/, 'mixture'],
+    [/^controls\/engines\/engine(\[\d+\])?\/propeller-pitch$/, 'prop-lever'],
+    [/^autopilot\/settings\/target-speed-kt$/, 'ap-spd'], [/^autopilot\/settings\/target-speed-mach$/, 'ap-mach'],
+    [/^autopilot\/settings\/heading-bug-deg$/, 'ap-hdg'], [/^autopilot\/settings\/target-altitude-ft$/, 'ap-alt'],
+    [/^autopilot\/settings\/vertical-speed-fpm$/, 'ap-vs'],
+    [/^instrumentation\/airspeed-indicator\/indicated-speed-kt$/, 'ias'], [/^velocities\/airspeed-kt$/, 'ias'],
+    [/^instrumentation\/altimeter\/indicated-altitude-ft$/, 'alt'], [/^position\/altitude-ft$/, 'alt'],
+    [/^instrumentation\/attitude-indicator\/indicated-pitch-deg$/, 'pitch'], [/^orientation\/pitch-deg$/, 'pitch'],
+    [/^instrumentation\/attitude-indicator\/indicated-roll-deg$/, 'roll'], [/^orientation\/roll-deg$/, 'roll'],
+    [/^instrumentation\/(heading-indicator(-fg)?|magnetic-compass)\/indicated-heading-deg$/, 'hdg'], [/^orientation\/heading-(magnetic-)?deg$/, 'hdg'],
+    [/^instrumentation\/vertical-speed-indicator\/indicated-speed-fpm$/, 'vs'],
+    [/^instrumentation\/turn-indicator\/indicated-turn-rate$/, 'turn'], [/^instrumentation\/slip-skid-ball\/indicated-slip-skid$/, 'slip'],
+    [/^engines\/engine(\[\d+\])?\/rpm$/, 'rpm' + eng],
+    [/^surface-positions\/(left-)?aileron-pos-norm$/, 'aileron-pos'], [/^surface-positions\/right-aileron-pos-norm$/, 'aileron-pos-r'],
+    [/^surface-positions\/elevator-pos-norm$/, 'elevator-pos'], [/^surface-positions\/rudder-pos-norm$/, 'rudder-pos'],
+  ];
+  // aircraft-specific names for the same things
+  const alias = [
+    [/^fdm\/jsbsim\/fcs\/throttle-pos-norm(\[\d+\])?$/, 'throttle' + (/\[(\d+)\]$/.exec(p)?.[1] ?? '0')],
+    [/^controls\/cockpit\/throttle-lever(\[\d+\])?$/, 'throttle' + (/\[(\d+)\]$/.exec(p)?.[1] ?? '0')],
+    [/cockpit\/(yoke-)?aileron(-sidestick-(capt|fo))?$/, 'aileron'], [/cockpit\/yoke-aileron-abs$/, 'aileron-abs'],
+    [/cockpit\/(yoke-)?elevator(-sidestick-(capt|fo))?$/, 'elevator'], [/^controls\/cockpit\/rudder-pedal$/, 'rudder'],
+    [/^controls\/cockpit\/gear-lever$/, 'gear-lever'],
+    [/^fdm\/jsbsim\/velocities\/vias-kts$/, 'ias'], [/^instrumentation\/magnetic-compass\/indicated-heading-deg-final$/, 'hdg'],
+    [/^instrumentation\/gps\/indicated-altitude-ft$/, 'alt'], [/^instrumentation\/gps\/indicated-vertical-speed$/, 'vs'],
+    [/^autopilot\/settings\/target-altitude-mcp-ft$/, 'ap-alt'], [/^instrumentation\/rmi\/heading$/, 'hdg'],
+  ];
+  for (const [rx, id] of [...table, ...alias]) if (rx.test(p)) return id;
+  return null;
+}
+
+/** textranslate (digit drums of MCP windows, counters): texture shift = quantised(value) * factor + offset along u/v. */
+function parseTexAnim(node, inst) {
+  const prop = node.str('property');
+  const live = prop ? liveProp(prop) : null;
+  if (!live) return null;
+  const ax = node.get('axis');
+  const axis = [ax?.num('x') ?? 0, ax?.num('y') ?? 0];
+  if (!axis[0] && !axis[1]) return null;
+  return { type: 'tex', inst, prop, live, axis, factor: node.has('factor') ? node.num('factor') : 1, offset: node.num('offset'),
+    step: node.num('step'), bias: node.num('bias'), cond: node.get('condition') };
+}
+
+function parseTransformAnim(node, type, inst, axisObject) {
   const prop = node.str('property');
   if (!prop) return null;
   let center = node.has('center') ? [node.num('center/x-m'), node.num('center/y-m'), node.num('center/z-m')] : [0, 0, 0];
   let axis = null;
   const ax = node.get('axis');
-  if (ax?.has('x1-m')) {
+  if (ax?.has('object-name')) {
+    // axis given by a two-point line object in the geometry (newer FlightGear models)
+    const line = axisObject?.(ax.str('object-name'));
+    if (!line) return null;
+    const [p1, p2] = line;
+    axis = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
+    if (!node.has('center')) center = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2];
+  } else if (ax?.has('x1-m')) {
     const p1 = [ax.num('x1-m'), ax.num('y1-m'), ax.num('z1-m')], p2 = [ax.num('x2-m'), ax.num('y2-m'), ax.num('z2-m')];
     axis = [p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]];
     if (!node.has('center')) center = [(p1[0] + p2[0]) / 2, (p1[1] + p2[1]) / 2, (p1[2] + p2[2]) / 2];
@@ -58,6 +119,7 @@ function parseTransformAnim(node, type, inst) {
     cond: node.get('condition'),
     group: POSE_GROUPS.find(g => g.rx.test(prop))?.id ?? null,
     spin: (type === 'spin' || type === 'rotate') && SPIN_PROP.test(prop),
+    live: type === 'spin' ? null : liveProp(prop),
   };
 }
 
@@ -156,6 +218,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
   const effects = [];     // { inst, node }
   const instances = [];
   const geomCache = new Map();
+  const objIndex = [];  // every named geometry object (incl. axis lines) in its instance's frame
 
   // Scene graph mirroring FlightGear's: instance roots, AC objects, named animation groups. Transform
   // animations attach to nodes (xforms[0] is closest to the geometry, i.e. the most recently declared).
@@ -247,6 +310,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       const m = mul(fromRot3Loc(o.rot, o.loc), parentM);
       const names = o.name ? [...ancestors, o.name] : ancestors;
       const n = newNode(o.name, parentNode, inst, false);
+      if (o.name && o.verts.length >= 6) objIndex.push({ inst, name: o.name, p1: xform(m, o.verts[0], o.verts[1], o.verts[2]), p2: xform(m, o.verts[3], o.verts[4], o.verts[5]) });
       if (o.surfs.length && !o.hidden && !SKIP_OBJECT.test(o.name)) {
         parts.push({ name: o.name, names, inst, node: n, obj: o, localM: m, matrix: null, materials: g.materials, dir,
           texDirs: [...new Set([dir, inst.texDir ?? dir])], visible: true, slot: null, texOverride: null, effect: null });
@@ -286,7 +350,11 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
         }
       }
     } else if (type === 'rotate' || type === 'translate' || type === 'spin') {
-      const anim = parseTransformAnim(node, type, inst);
+      const axisObject = name => { const o = objIndex.find(x => x.name === name && x.inst.isWithin(inst)); return o ? [o.p1, o.p2] : null; };
+      const anim = parseTransformAnim(node, type, inst, axisObject);
+      if (anim) for (const t of findNodes(inst, names)) t.xforms.unshift(anim);
+    } else if (type === 'textranslate') {
+      const anim = parseTexAnim(node, inst);
       if (anim) for (const t of findNodes(inst, names)) t.xforms.unshift(anim);
     } else if (type === 'select') {
       if (!evalCondition(node.get('condition'), state)) for (const p of match(inst, names)) p.visible = false;
@@ -360,7 +428,7 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
     for (let n = p.node; n; n = n.parent) {
       if (n.isInst) M = mul(M, n.inst.local);
       for (const a of n.xforms) {
-        if (a.spin || !a.group || values[a.group] === undefined) continue;
+        if (a.type === 'tex' || a.spin || !a.group || values[a.group] === undefined) continue;
         if (a.cond && !evalCondition(a.cond, state)) continue;
         const gv = values[a.group];
         M = mul(M, animMatrix(a, /gear-down/.test(a.prop) ? (gv > 0.5 ? 1 : 0) : gv));
@@ -389,7 +457,50 @@ export async function loadModel(fg, modelFile, { state, aircraftDir, log = () =>
       p.spin = spins.get(s);
     }
   }
-  return { root, parts: parts.filter(p => p.visible), slots: [...slots.values()], instances, resolve, poseMatrix, spins: [...spins.values()] };
+  // ---- live parts: bound to properties the simulator drives (controls, MCP windows, gauges, surfaces) ----
+  // Each live transform is exported in model space: conjugated by everything outside it in the chain (at rest),
+  // so the runtime can apply them innermost first: p' = A_outer(...A_inner(p_rest)).
+  const live = new Map(), texLive = new Map();
+  const animId = new Map();
+  const idOf = a => { if (!animId.has(a)) animId.set(a, animId.size); return animId.get(a); };
+  for (const p of parts) {
+    if (!p.visible || p.spin || p.group) continue;
+    const seq = [];
+    for (let n = p.node; n; n = n.parent) {
+      if (n.isInst) seq.push({ m: n.inst.local });
+      for (const a of n.xforms) {
+        if (a.cond && !evalCondition(a.cond, state)) continue;
+        if (a.type === 'tex') { if (a.live) seq.push({ tex: a }); continue; }
+        if (a.spin) continue;
+        if (a.live) { seq.push({ a }); continue; }
+        if (a.group) seq.push({ m: animMatrix(a, /gear-down/.test(a.prop) ? (restValues[a.group] > 0.5 ? 1 : 0) : restValues[a.group]) });
+      }
+    }
+    const tex = seq.find(s => s.tex)?.tex;
+    if (tex) {
+      const key = idOf(tex);
+      if (!texLive.has(key)) texLive.set(key, { anim: tex, parts: [] });
+      texLive.get(key).parts.push(p);
+      p.live = true;
+      continue;
+    }
+    const idx = seq.map((s, i) => (s.a ? i : -1)).filter(i => i >= 0);
+    if (!idx.length) continue;
+    const anims = idx.map(i => {
+      const a = seq[i].a;
+      let R = ident();
+      for (let j = i + 1; j < seq.length; j++) if (seq[j].m) R = mul(R, seq[j].m);
+      const c = xform(R, ...a.center), o = xform(R, 0, 0, 0), e = xform(R, ...a.axis);
+      return { a, center: c, axis: [e[0] - o[0], e[1] - o[1], e[2] - o[2]] };
+    });
+    const key = anims.map(x => idOf(x.a)).join(',');
+    if (!live.has(key)) live.set(key, { anims, parts: [] });
+    live.get(key).parts.push(p);
+    p.live = true;
+  }
+
+  return { root, parts: parts.filter(p => p.visible), slots: [...slots.values()], instances, resolve, poseMatrix, spins: [...spins.values()],
+    live: [...live.values()], texLive: [...texLive.values()] };
 }
 
 function mergeOverlay(node, overlay) {

@@ -323,7 +323,8 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px, livery_px):
     man = json.load(open(os.path.join(src_dir, 'manifest.json'), encoding='utf-8'))
     j, bin_ = read_glb(os.path.join(src_dir, man['glb']))
     os.makedirs(os.path.join(out_dir, 'l'), exist_ok=True)
-    base = subset(j, bin_, lambda n: n != 'Interior', out_dir, 't', 'model.bin', max_px, quality)
+    in_cockpit = lambda n: n == 'Interior' or n.startswith(('ILive_', 'ITex_'))
+    base = subset(j, bin_, lambda n: not in_cockpit(n), out_dir, 't', 'model.bin', max_px, quality)
     mats, textures = base['materials'], base['textures']
     # glossier paint and clear glass: the web scene lights models with the sky's reflections (PBR)
     for m in mats:
@@ -350,7 +351,7 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px, livery_px):
 
     has_interior = any(n.get('name') == 'Interior' and 'mesh' in n for n in j['nodes'])
     if has_interior:
-        inter = subset(j, bin_, lambda n: n == 'Interior', out_dir, 'ti', 'interior.bin', interior_px, quality)
+        inter = subset(j, bin_, in_cockpit, out_dir, 'ti', 'interior.bin', interior_px, quality)
         json.dump(tame_emissive(inter), open(os.path.join(out_dir, 'interior.gltf'), 'w'), separators=(',', ':'))
         compress(os.path.join(out_dir, 'interior.gltf'))
         faces = screen_faces(j, bin_, man)
@@ -401,6 +402,7 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px, livery_px):
         'bounds': man['bounds'], 'groundY': man['groundY'], 'eye': man.get('eye'),
         'interior': has_interior, 'screens': len(faces),
         'poses': man.get('poses', []), 'spins': man.get('spins', []),
+        'live': man.get('live', []), 'texLive': man.get('texLive', []),
         'defaultLivery': out_livs[0]['id'], 'liveries': out_livs,
     }
 

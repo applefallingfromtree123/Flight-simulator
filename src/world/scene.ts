@@ -8,7 +8,7 @@ import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
-import { fgLivery, fgModelFor, type FgModel } from './fgModels.ts';
+import { fgLivery, fgModelFor, type FgLiveAnim, type FgModel } from './fgModels.ts';
 import { Cockpit3D, type FgScreenFace } from './cockpit3d.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
@@ -44,6 +44,34 @@ export interface SceneOptions {
   }
 }
 
+/** FlightGear animation value: interpolation table, or value * factor + offset, clamped. */
+function animValue(a: FgLiveAnim, v: number) {
+  let x: number;
+  const t = a.interp;
+  if (t?.length) {
+    if (v <= t[0][0]) x = t[0][1];
+    else if (v >= t[t.length - 1][0]) x = t[t.length - 1][1];
+    else {
+      let i = 1;
+      while (t[i][0] < v) i++;
+      const f = (v - t[i - 1][0]) / ((t[i][0] - t[i - 1][0]) || 1);
+      x = t[i - 1][1] + (t[i][1] - t[i - 1][1]) * f;
+    }
+  } else x = v * a.factor + (a.offset || 0);
+  if (a.min !== null) x = Math.max(a.min, x);
+  if (a.max !== null) x = Math.min(a.max, x);
+  return x;
+}
+/** Model-space matrix of one FlightGear rotate (degrees, right-handed about the axis through center) or translate (m). */
+function liveMatrix(a: FgLiveAnim, x: number) {
+  const axis = Cesium.Cartesian3.normalize(new Cesium.Cartesian3(...a.axis), new Cesium.Cartesian3());
+  if (a.type === 'translate') return Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.multiplyByScalar(axis, x, axis));
+  const c = new Cesium.Cartesian3(...a.center);
+  const m = Cesium.Matrix4.fromTranslation(c);
+  Cesium.Matrix4.multiply(m, Cesium.Matrix4.fromRotationTranslation(Cesium.Matrix3.fromQuaternion(Cesium.Quaternion.fromAxisAngle(axis, x * Math.PI / 180))), m);
+  return Cesium.Matrix4.multiply(m, Cesium.Matrix4.fromTranslation(Cesium.Cartesian3.negate(c, c)), m);
+}
+
 /** More light from the sky/ground reflections on a model, so its shaded side isn't black under HDR. */
 function brightenSkyLight(model: Cesium.Model, brightness: number) {
   const em = (model as unknown as { environmentMapManager?: Cesium.DynamicEnvironmentMapManager }).environmentMapManager;
@@ -64,6 +92,8 @@ export class World {
   readonly acMatrix = new Cesium.Matrix4();
   private modelNodes: ModelNodes | null = null;
   private propAngle: number[] = [];
+  /** Values the live cockpit parts follow (controls, autopilot selections, instruments), set every frame. */
+  liveValues: Record<string, number> = {};
   /** Real FlightGear model in use (null = procedural model). */
   private fg: { m: FgModel; off: Cesium.Cartesian3; angle: number[]; placed: boolean; interior: Cesium.Model | null; interiorPlaced: boolean } | null = null;
   private lights: Cesium.PointPrimitiveCollection;
@@ -432,7 +462,7 @@ export class World {
       }
     }
     const nodes = this.modelNodes!;
-    if (this.fg && this.model.ready) this.updateFgModel(ac, dt);
+    if (this.fg && this.model.ready) { this.updateFgModel(ac, dt); this.updateLive(); }
     else if (this.model.ready) {
       const gear = nodes.gear.length ? this.model.getNode('gear') : undefined;
       if (gear) gear.show = ac.gearPos > 0.05;
@@ -466,6 +496,42 @@ export class World {
     set(5, lightsState.beacon && flash(1.0, 0.5, 0.12), [0, 0, -def.dia * 0.55]);
     set(6, lightsState.beacon && flash(1.0, 0.0, 0.12), [0, 0, def.dia * 0.55]);
     set(7, lightsState.landing && this.view !== 'cockpit' && this.view !== 'cockpit-hud', [def.L * 0.1, 0, def.dia * 0.5]);
+  }
+
+  /**
+   * Live parts: yokes/sidesticks, throttles, needles and control surfaces follow the simulation (FlightGear
+   * rotate/translate semantics, transforms innermost first); digit windows show the copy for the current value.
+   */
+  private updateLive() {
+    const fg = this.fg!, vals = this.liveValues, off = Cesium.Matrix4.fromTranslation(fg.off);
+    const hostOf = (interior: boolean) => (interior ? fg.interior : this.model);
+    for (const l of fg.m.live ?? []) {
+      const host = hostOf(l.interior);
+      if (!host?.ready) continue;
+      const n = host.getNode(l.node);
+      if (!n) continue;
+      const M = Cesium.Matrix4.clone(Cesium.Matrix4.IDENTITY);
+      for (const a of l.anims) {
+        const v = vals[a.prop];
+        if (v === undefined) continue;
+        Cesium.Matrix4.multiply(liveMatrix(a, animValue(a, v)), M, M);
+      }
+      n.matrix = Cesium.Matrix4.multiply(Cesium.Matrix4.multiply(off, M, M), n.originalMatrix, new Cesium.Matrix4());
+    }
+    for (const t of fg.m.texLive ?? []) {
+      const host = hostOf(t.interior);
+      if (!host?.ready) continue;
+      const v = vals[t.prop] ?? 0;
+      const q = t.step ? Math.floor((v + (t.bias || 0)) / t.step) * t.step : v;
+      const frac = (((q * t.factor + (t.offset || 0)) % 1) + 1) % 1;
+      const k = Math.round(frac * t.n) % t.n;
+      t.nodes.forEach((name, i) => {
+        const n = host.getNode(name);
+        if (!n) return;
+        n.show = i === k;
+        if (i === k) n.matrix = Cesium.Matrix4.multiply(off, n.originalMatrix, new Cesium.Matrix4());
+      });
+    }
   }
 
   /** Gear/flap poses (show the nearest pre-posed node) and spinning props/rotors of a FlightGear model. */
