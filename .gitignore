@@ -17,3 +17,4 @@ Unreal/SkyLine/*.sln
 build/
 Unreal/SkyLine/Content/ImportSource/
 public/aircraft/
+__pycache__/
