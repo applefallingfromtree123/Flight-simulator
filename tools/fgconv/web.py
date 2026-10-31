@@ -164,6 +164,22 @@ def subset(j0, bin_, keep_root, out_dir, tdir, bin_name, max_px, quality):
     }
 
 
+def tame_emissive(g):
+    """FlightGear lights cockpit legends with light maps; the conversion leaves a flat emissive colour, which
+    glTF draws as solid white blocks. Glow follows the texture instead (dimmed), and untextured glow is faint."""
+    for m in g.get('materials', []):
+        ef = m.get('emissiveFactor')
+        if not ef or max(ef) <= 0.02 or m.get('name', '').startswith('SCREEN_'):
+            continue
+        bct = m.get('pbrMetallicRoughness', {}).get('baseColorTexture')
+        if bct is not None and 'emissiveTexture' not in m:
+            m['emissiveTexture'] = dict(bct)
+            m['emissiveFactor'] = [min(c, 0.45) for c in ef]
+        elif 'emissiveTexture' not in m:
+            m['emissiveFactor'] = [min(c, 0.1) for c in ef]
+    return g
+
+
 def plane_extents(P, tris):
     """Sorted (thickness, width, height) of a point set measured in the plane of its largest triangle."""
     sub = lambda a, b: (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -317,7 +333,7 @@ def pack(src_dir, out_dir, max_px, max_liv, quality, interior_px):
     has_interior = any(n.get('name') == 'Interior' and 'mesh' in n for n in j['nodes'])
     if has_interior:
         inter = subset(j, bin_, lambda n: n == 'Interior', out_dir, 'ti', 'interior.bin', interior_px, quality)
-        json.dump(inter, open(os.path.join(out_dir, 'interior.gltf'), 'w'), separators=(',', ':'))
+        json.dump(tame_emissive(inter), open(os.path.join(out_dir, 'interior.gltf'), 'w'), separators=(',', ':'))
         faces = screen_faces(j, bin_, man)
         if faces:
             json.dump(faces, open(os.path.join(out_dir, 'screens.json'), 'w'), separators=(',', ':'))
@@ -412,7 +428,7 @@ def main():
     ap.add_argument('--src', default='Unreal/SkyLine/Aircraft')
     ap.add_argument('--out', default='web-aircraft')
     ap.add_argument('--max', type=int, default=1024)
-    ap.add_argument('--interior-max', type=int, default=1024)
+    ap.add_argument('--interior-max', type=int, default=2048, help='cockpit texture size cap (px)')
     ap.add_argument('--liveries', type=int, default=0, help='max liveries per aircraft (0 = all)')
     ap.add_argument('--quality', type=int, default=82)
     ap.add_argument('ids', nargs='*')

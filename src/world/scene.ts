@@ -24,6 +24,26 @@ export interface SceneOptions {
   shadows: boolean;
   quality: 'low' | 'medium' | 'high' | 'ultra';
 }
+// Cesium samples glTF textures without anisotropic filtering, which blurs cockpit panels and liveries
+// seen at an angle: give every model texture sampler up to 8x anisotropy.
+{
+  type Smp = { wrapS: number; wrapT: number; minificationFilter: number; magnificationFilter: number };
+  const C = Cesium as unknown as {
+    GltfLoaderUtil?: { createSampler?: (o: object) => Smp }; ContextLimits?: { maximumTextureFilterAnisotropy: number };
+    Sampler?: new (o: object) => Smp;
+  };
+  const util = C.GltfLoaderUtil, limits = C.ContextLimits, SamplerCtor = C.Sampler;
+  const orig = util?.createSampler;
+  if (util && orig && SamplerCtor) {
+    util.createSampler = (o: object) => {
+      const s = orig(o);
+      const max = Math.min(8, limits?.maximumTextureFilterAnisotropy ?? 1);
+      if (!(max > 1)) return s;
+      return new SamplerCtor({ wrapS: s.wrapS, wrapT: s.wrapT, minificationFilter: s.minificationFilter, magnificationFilter: s.magnificationFilter, maximumAnisotropy: max });
+    };
+  }
+}
+
 /** More light from the sky/ground reflections on a model, so its shaded side isn't black under HDR. */
 function brightenSkyLight(model: Cesium.Model, brightness: number) {
   const em = (model as unknown as { environmentMapManager?: Cesium.DynamicEnvironmentMapManager }).environmentMapManager;
@@ -343,6 +363,7 @@ export class World {
         fgFaces = { faces, eyeModel: toModel(e[0], e[1], e[2]) };
       } catch (e) { console.error('FlightGear cockpit failed, using the procedural flight deck', e); }
     }
+    this.cockpit3d.screenPx = this.tier >= 2 ? 1024 : 768;
     try { await this.cockpit3d.build(ac, this.eyePoint(ac), fgFaces); }
     catch (e) { console.error('3D cockpit build failed', e); this.cockpit3d.destroy(); }
   }

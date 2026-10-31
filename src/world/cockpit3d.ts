@@ -41,6 +41,8 @@ export class Cockpit3D {
   private fcu = document.createElement('canvas');
   private drawT = 0;
   visible = false;
+  /** Backing size of the live displays (px); set from the graphics quality. */
+  screenPx = 768;
 
   constructor(private scene: Cesium.Scene) {}
 
@@ -89,7 +91,8 @@ export class Cockpit3D {
     this.six = need.has('six') ? new SixPack(this.holder) : null;
     for (const disp of [this.pfd, this.nd, this.eicas, this.six]) {
       if (!disp) continue;
-      disp.fixed = disp === this.six ? [768, 512] : [512, 512];
+      const n = this.screenPx;
+      disp.fixed = disp === this.six ? [Math.round(n * 1.5), n] : [n, n];
       disp.cv.width = disp.fixed[0]; disp.cv.height = disp.fixed[1];
     }
     this.fcu.width = 1024; this.fcu.height = 128;
@@ -111,7 +114,7 @@ export class Cockpit3D {
         // painted surfaces are static: mipmapped + anisotropic so small legends stay crisp at grazing angles
         const sampler = new SamplerCtor(def.art
           ? { minificationFilter: Cesium.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 8 }
-          : { minificationFilter: Cesium.TextureMinificationFilter.LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 4 });
+          : { minificationFilter: Cesium.TextureMinificationFilter.LINEAR_MIPMAP_LINEAR, magnificationFilter: Cesium.TextureMagnificationFilter.LINEAR, maximumAnisotropy: 8 });
         const t = new TextureCtor({ context: ctx, source: cv, sampler });
         if (def.art) { try { t.generateMipmap(); } catch { /* NPOT on WebGL1: falls back to base level */ } }
         entry = { cv, tex: t, live: !def.art };
@@ -169,7 +172,11 @@ export class Cockpit3D {
     for (const [src, t] of this.textures) {
       if (!t.live) continue;
       if (!sys.avionicsPowered && src !== 'six') { const g = t.cv.getContext('2d')!; g.setTransform(1, 0, 0, 1, 0, 0); g.fillStyle = '#05070a'; g.fillRect(0, 0, t.cv.width, t.cv.height); }
-      try { (t.tex as { copyFrom(o: object): void }).copyFrom({ source: t.cv }); } catch { /* size changed mid-flight: ignore this frame */ }
+      try {
+        const tex = t.tex as { copyFrom(o: object): void; generateMipmap(): void };
+        tex.copyFrom({ source: t.cv });
+        tex.generateMipmap(); // sharp text without shimmer at any viewing distance
+      } catch { /* size changed mid-flight: ignore this frame */ }
     }
   }
 }
