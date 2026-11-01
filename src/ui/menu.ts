@@ -53,8 +53,9 @@ export class Menu {
   onCareerAbandon: () => void = () => {};
   onActivity: (c: FlightConfig, a: Activity) => void = () => {};
   career: CareerState | null = loadCareer();
-  tab: 'plan' | 'aircraft' | 'career' | 'activities' | 'settings' | 'help' = 'plan';
+  tab: 'home' | 'plan' | 'aircraft' | 'career' | 'activities' | 'settings' | 'help' = 'home';
   private focus: Airport | undefined;
+  private shownOnce = false;
   private canResume = false;
 
   constructor(private el: HTMLElement, private db: AirportDB, private controls: Controls) {}
@@ -62,6 +63,8 @@ export class Menu {
   show(canResume: boolean, tab?: Menu['tab']) {
     this.el.classList.remove('hidden');
     if (tab) this.tab = tab;
+    else if (!canResume && this.tab !== 'home' && !this.shownOnce) this.tab = 'home';
+    this.shownOnce = true;
     this.canResume = canResume;
     this.render(canResume);
     const a = this.db.get(this.cfg.dep);
@@ -102,12 +105,44 @@ export class Menu {
   hide() { this.el.classList.add('hidden'); }
   get visible() { return !this.el.classList.contains('hidden'); }
 
+  /** MSFS-style home: big picture cards over the slowly turning globe. */
+  onHome: (home: boolean) => void = () => {};
+  private renderHome(canResume: boolean) {
+    this.el.classList.add('home');
+    this.onHome(true);
+    const lic = this.career ? licenceOf(this.career).name : null;
+    const card = (tab: Menu['tab'], img: string, title: string, sub: string, big = false) =>
+      `<button class="h-card${big ? ' big' : ''}" data-go="${tab}" style="background-image:linear-gradient(180deg,#0000 35%,#000c),url(ui/${img}.webp)">
+        <span class="h-t">${title}</span><span class="h-s">${sub}</span></button>`;
+    this.el.innerHTML = `
+      <div class="home-top">
+        <h1>SKY<span>LINE</span><small>FLIGHT SIMULATOR</small></h1>
+        <div>${canResume ? '<button id="resume" class="primary">비행 재개</button>' : ''}<button id="menuDiag">진단</button></div>
+      </div>
+      <div class="home-cards">
+        ${card('plan', 'free', '자유 비행', '전 세계 9,560개 공항 · 실제 날씨', true)}
+        ${card('career', 'career', '커리어', lic ? `${lic} · $${this.career!.money.toLocaleString()}` : '학생 조종사부터 대형기 기장까지')}
+        ${card('activities', 'activities', '액티비티', '착륙 챌린지 · 디스커버리 비행')}
+        ${card('aircraft', 'aircraft', '기체 · 도색', '실제 기체 모델 45종 · 실제 항공사 도색')}
+        ${card('settings', 'settings', '설정', '그래픽 · 3D 도시 · 조종 장치')}
+      </div>
+      <div class="home-foot"><button data-go="help">조작법</button><span class="dim">FlightGear 실제 기체 · Cesium 지구 · 자체 비행역학</span></div>`;
+    this.el.querySelectorAll<HTMLButtonElement>('[data-go]').forEach(b => b.onclick = () => { this.tab = b.dataset.go as Menu['tab']; this.render(canResume); });
+    this.el.querySelector<HTMLButtonElement>('#menuDiag')!.onclick = () => this.onDiag();
+    const res = this.el.querySelector<HTMLButtonElement>('#resume');
+    if (res) res.onclick = () => this.onResume?.();
+  }
+
   private render(canResume: boolean) {
+    if (this.tab === 'home') { this.renderHome(canResume); return; }
+    this.el.classList.remove('home');
+    this.onHome(false);
     this.el.innerHTML = `
       <header>
-        <h1>SKY<span>LINE</span> <span class="dim" style="font-size:11px;letter-spacing:1px">FLIGHT SIMULATOR</span></h1>
+        <h1 id="goHome" title="홈">SKY<span>LINE</span></h1>
         <div class="tabs">
-          <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}">비행 계획</button>
+          <button data-tab="home">⌂ 홈</button>
+          <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}">자유 비행</button>
           <button data-tab="aircraft" class="${this.tab === 'aircraft' ? 'on' : ''}">기종 · 도색</button>
           <button data-tab="career" class="${this.tab === 'career' ? 'on' : ''}">커리어</button>
           <button data-tab="activities" class="${this.tab === 'activities' ? 'on' : ''}">액티비티</button>
@@ -125,6 +160,7 @@ export class Menu {
       </div>
       <div class="m-col right" id="rightCol"></div>`;
     this.el.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => b.onclick = () => { this.tab = b.dataset.tab as never; this.render(canResume); });
+    this.el.querySelector<HTMLElement>('#goHome')!.onclick = () => { this.tab = 'home'; this.render(canResume); };
     this.el.querySelector<HTMLButtonElement>('#menuDiag')!.onclick = () => this.onDiag();
     const res = this.el.querySelector<HTMLButtonElement>('#resume');
     if (res) res.onclick = () => this.onResume?.();
@@ -250,7 +286,8 @@ export class Menu {
   private renderPlan(el: HTMLElement) {
     const c = this.cfg;
     const a = getAircraft(c.aircraftId);
-    const wx = Object.entries(WEATHER_PRESETS).map(([k, v]) => `<option value="${k}" ${k === c.weather ? 'selected' : ''}>${v.label}</option>`).join('');
+    const wx = `<option value="live" ${c.weather === 'live' ? 'selected' : ''}>실시간 기상 (현재 실제 날씨 · 난기류)</option>`
+      + Object.entries(WEATHER_PRESETS).map(([k, v]) => `<option value="${k}" ${k === c.weather ? 'selected' : ''}>${v.label}</option>`).join('');
     el.innerHTML = `
       <div class="sec"><h3>출발</h3>
         ${this.aptField('dep', '출발 공항', c.dep)}

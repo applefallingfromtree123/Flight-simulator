@@ -6,7 +6,8 @@ import { Aircraft } from './sim/fdm.ts';
 import { FCS, type Waypoint } from './sim/fcs.ts';
 import { Systems } from './sim/systems.ts';
 import { getAircraft } from './sim/aircraftDb.ts';
-import { WEATHER_PRESETS, atmosphere, casToTas, inCloud, type WeatherState } from './sim/atmosphere.ts';
+import { WEATHER_PRESETS, atmosphere, casToTas, inCloud, turbulenceAt, type WeatherState } from './sim/atmosphere.ts';
+import { fetchLiveWeather } from './sim/liveWeather.ts';
 import { maxThrust } from './sim/engines.ts';
 import { AirportDB, lineUp, makeApproach, runwayEnds, type Airport } from './world/airports.ts';
 import { World, type ViewMode } from './world/scene.ts';
@@ -64,6 +65,38 @@ class App {
   // career flight tracking
   careerJob: Job | null = null;
   activity: Activity | null = null;
+  /** Live weather in use: where/when it was fetched (refreshed as the flight moves on). */
+  private liveWx: { at: { lat: number; lon: number; time: number }; summary: string; busy?: boolean } | null = null;
+  private turbShown = 0;
+  private async fetchWeather(lat: number, lon: number) {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 8000);
+    try { return await fetchLiveWeather(lat, lon, ctl.signal); } finally { clearTimeout(timer); }
+  }
+  /** Refresh live weather every 10 minutes or 150 km, and tell the pilot when the air gets rough. */
+  private updateLiveWeather() {
+    const ac = this.ac!, lw = this.liveWx;
+    if (lw && !lw.busy) {
+      const moved = Math.hypot(ac.lat - lw.at.lat, (ac.lon - lw.at.lon) * Math.cos(ac.lat * DEG)) * 111;
+      if (moved > 150 || Date.now() - lw.at.time > 10 * 60_000) {
+        lw.busy = true;
+        this.fetchWeather(ac.lat, ac.lon).then(n => {
+          // clouds come back above ground: put them over the terrain under the aircraft
+          for (const c of n.w.clouds) { c.base += ac.groundH; c.top += ac.groundH; }
+          Object.assign(this.weather, n.w);
+          this.liveWx = { at: n.at, summary: n.summary };
+          toast(n.summary);
+        }).catch(() => { lw.at = { lat: ac.lat, lon: ac.lon, time: Date.now() }; lw.busy = false; });
+      }
+    }
+    const t = turbulenceAt(this.weather, ac.alt, ac.agl);
+    const lvl = t > 0.6 ? 3 : t > 0.35 ? 2 : t > 0.12 ? 1 : 0;
+    if (lvl !== this.turbShown) {
+      if (lvl > this.turbShown) toast(['', '약한 난기류 구역 — 기체가 흔들립니다', '보통 난기류 — 좌석벨트', '심한 난기류! 속도를 줄이고 고도를 바꾸세요'][lvl]);
+      else if (lvl === 0) toast('난기류 구역을 벗어났습니다');
+      this.turbShown = lvl;
+    }
+  }
   private landing: { td: Touchdown | null; since: number; done: boolean } = { td: null, since: 0, done: false };
   private job = { t: 0, airborne: false, overspeed: 0, fpm: null as number | null, stillT: 0, done: false };
 
@@ -109,6 +142,7 @@ class App {
       this.careerJob = null;
     };
     this.menu.onRoute = pts => this.world.showRoute(pts);
+    this.menu.onHome = home => { if (!this.flying) this.map.setActive(!home); };
     this.menu.onResume = () => this.resume();
     this.menu.onDiag = () => this.toggleDiag();
     this.menu.onSettings = st => {
@@ -126,8 +160,8 @@ class App {
     this.bindUi();
     loading(null);
     (window as unknown as { __booted: boolean }).__booted = true;
-    this.menu.show(false);
     this.map.setActive(true);
+    this.menu.show(false);
     requestAnimationFrame(t => this.frame(t));
   }
 
@@ -148,7 +182,20 @@ class App {
     const sys = new Systems(ac, fcs);
     this.ac = ac; this.fcs = fcs; this.sys = sys;
     // weather
-    const w: WeatherState = JSON.parse(JSON.stringify((WEATHER_PRESETS[cfg.weather] ?? WEATHER_PRESETS.clear).w));
+    let w: WeatherState = JSON.parse(JSON.stringify((WEATHER_PRESETS[cfg.weather] ?? WEATHER_PRESETS.clear).w));
+    const depApt = this.db.get(cfg.dep)!;
+    this.liveWx = null;
+    if (cfg.weather === 'live') {
+      loading('실시간 기상 받는 중… (Open-Meteo)');
+      try {
+        const lw = await this.fetchWeather(depApt.lat, depApt.lon);
+        w = lw.w;
+        this.liveWx = { at: lw.at, summary: lw.summary };
+      } catch (e) {
+        w = JSON.parse(JSON.stringify(WEATHER_PRESETS.few.w));
+        toast(`실시간 기상을 받지 못해 기본 날씨로 시작합니다 (${(e as Error).message})`);
+      }
+    }
     if (cfg.windDir !== null) w.windDir = cfg.windDir;
     if (cfg.windSpd !== null) { w.windSpd = cfg.windSpd; if (w.gust && w.gust < cfg.windSpd) w.gust = 0; }
     if (cfg.visibility !== null) w.visibility = cfg.visibility;
@@ -208,6 +255,7 @@ class App {
     this.lastTouch = ac.touchdownEvent;
     toast(`${dep.icao} ${cfg.start === 'final' && arr ? '→ ' + arr.icao + ' 최종접근' : ''} · ${def.name} · QNH ${Math.round(w.qnh)}`);
     if (this.careerJob) toast(`커리어 임무: ${this.careerJob.from} → ${this.careerJob.to} · 도착 후 정지하고 파킹 브레이크(또는 엔진 정지)하면 임무 완료`);
+    if (this.liveWx) toast(this.liveWx.summary);
     if (this.activity) toast(this.activity.type === 'landing' ? `착륙 챌린지: ${this.activity.title} — 직접 조종해서 착륙하세요 (채점)` : `디스커버리: ${this.activity.title}`);
     if (cfg.start === 'cold') toast('Cold & Dark: 오버헤드(O)에서 시동 절차를 수행하거나 Ctrl+E로 자동 시동');
   }
@@ -502,6 +550,14 @@ class App {
     }, { passive: true });
     window.addEventListener('resize', () => this.layout());
     window.addEventListener('pointerdown', () => this.sound.init(), { once: true });
+    // the toolbar steps back after a few seconds without input (touch or move to bring it back)
+    let idleTimer = 0;
+    const wake = () => {
+      document.body.classList.remove('idle');
+      clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => { if (this.flying && !this.menu.visible) document.body.classList.add('idle'); }, 4000);
+    };
+    for (const ev of ['pointermove', 'pointerdown', 'keydown', 'touchstart']) window.addEventListener(ev, wake, { passive: true });
   }
 
   // ───────────────────────── main loop ─────────────────────────
@@ -558,6 +614,7 @@ class App {
         this.job.fpm = fpm;
       }
       if (this.careerJob) this.trackJob(dtReal * rate);
+      this.updateLiveWeather();
       if (this.activity?.type === 'landing') this.trackLanding(dtReal * rate);
       if (ac.crash) {
         if (this.careerJob && !this.job.done) this.completeJob(true);

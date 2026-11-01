@@ -167,6 +167,7 @@ export class World {
     this.runways = new RunwayRenderer(s, db);
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
+    s.preRender.addEventListener(() => this.updateFlexUniforms());
     if (opts.photoreal && (opts.googleKey || opts.ionToken)) this.enablePhotoreal(opts.googleKey);
   }
 
@@ -333,13 +334,39 @@ export class World {
     this.scene.globe.show = true;
   }
 
+  /**
+   * Photorealistic tiles use ellipsoid heights, the simulation mean sea level: keep measuring the tiles under the
+   * aircraft while it is on/over a runway (flat, no buildings) and ease the offset towards it, so the aircraft,
+   * runway lights and PAPIs sit on the photographed runway even when the one-off calibration failed.
+   */
+  private geoidT = 0;
+  private refineGeoid(ac: Aircraft) {
+    const now = performance.now();
+    if (!this.tileset || !this.tileset.show || now - this.geoidT < 1500 || ac.agl > 600) return;
+    this.geoidT = now;
+    const g = this.elevation.ground(ac.lat, ac.lon);
+    if (!g.runway) return;
+    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights].filter(Boolean) as object[];
+    let h: number | undefined;
+    try { h = this.scene.sampleHeight(Cesium.Cartographic.fromDegrees(ac.lon, ac.lat), exclude); } catch { return; }
+    if (h === undefined) return;
+    const target = clamp(h - g.h, -120, 120);
+    // first good sample snaps, later ones ease in (no visible jumps)
+    this.geoidOffset = Math.abs(target - this.geoidOffset) > 15 && !this.geoidFixed ? target : this.geoidOffset + (target - this.geoidOffset) * 0.3;
+    this.geoidFixed = true;
+  }
+  private geoidFixed = false;
+
   /** With photorealistic tiles (ellipsoidal heights), measure the MSL→ellipsoid offset at a runway. */
   async calibrateGeoid(lat: number, lon: number, mslElev: number) {
+    this.geoidFixed = false;
     if (!this.tileset) { this.geoidOffset = 0; return; }
     try {
       const c = Cesium.Cartographic.fromDegrees(lon, lat);
-      const [r] = await this.scene.sampleHeightMostDetailed([c], [this.model as unknown as object].filter(Boolean));
-      if (r?.height !== undefined) this.geoidOffset = clamp(r.height - mslElev, -120, 120);
+      const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.lights, this.rwyLights].filter(Boolean) as object[];
+      const [r] = await Promise.race([this.scene.sampleHeightMostDetailed([c], exclude),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
+      if (r?.height !== undefined) { this.geoidOffset = clamp(r.height - mslElev, -120, 120); this.geoidFixed = true; }
     } catch { /* keep previous */ }
   }
 
@@ -370,6 +397,7 @@ export class World {
     }
     this.scene.primitives.add(this.model);
     brightenSkyLight(this.model, 1.9);
+    this.setupWingFlex(ac);
     this.propAngle = this.modelNodes!.props.map(() => 0);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
@@ -462,6 +490,7 @@ export class World {
       }
     }
     const nodes = this.modelNodes!;
+    this.updateWingFlex(ac, dt);
     if (this.fg && this.model.ready) { this.updateFgModel(ac, dt); this.updateLive(); }
     else if (this.model.ready) {
       const gear = nodes.gear.length ? this.model.getNode('gear') : undefined;
@@ -534,6 +563,66 @@ export class World {
     }
   }
 
+  // ───────────────────────── wing flex ─────────────────────────
+  /**
+   * Wings bend with load: tips rise with g (pull-up, climb, turbulence) and droop on the ground, as a lightly damped
+   * spring so they flutter in rough air. Done in the vertex shader: wings, engines and flaps share meshes.
+   */
+  private flex = { x: 0, v: 0, tip: 0, half: 1, root: 1, tailZ: -1e9, freq: 2, on: false };
+  private flexShader: Cesium.CustomShader | null = null;
+  private setupWingFlex(ac: Aircraft) {
+    const d = ac.def;
+    // wing tip travel per g as a fraction of the half-span (787 ~3 m in cruise, 737 ~1 m, a Cessna a few cm)
+    const k = d.fdm === 'rotor' ? 0 : d.cat === 'widebody' ? 0.05 : d.cat === 'airliner' ? 0.035 : d.cat === 'regional' ? 0.03
+      : d.cat === 'turboprop' ? 0.03 : d.cat === 'bizjet' ? 0.02 : d.cat === 'glider' ? 0.09 : d.cat === 'military' ? 0.004 : 0.012;
+    this.flex = { x: 0, v: 0, tip: k * d.b / 2, half: d.b / 2, root: d.dia / 2 * 1.05, tailZ: -0.3 * d.L,
+      freq: d.cat === 'widebody' ? 1.1 : d.cat === 'airliner' || d.cat === 'regional' ? 1.6 : d.cat === 'glider' ? 1.3 : 3, on: k > 0 };
+    if (!this.model || !this.flex.on) { this.flexShader = null; return; }
+    this.flexShader = new Cesium.CustomShader({
+      uniforms: {
+        u_airToEye: { type: Cesium.UniformType.MAT4, value: Cesium.Matrix4.IDENTITY.clone() },
+        u_eyeToAir: { type: Cesium.UniformType.MAT4, value: Cesium.Matrix4.IDENTITY.clone() },
+        // x: tip deflection (m), y: half span, z: wing root (fuselage) half width, w: aft limit (tailplane excluded)
+        u_flex: { type: Cesium.UniformType.VEC4, value: new Cesium.Cartesian4(0, this.flex.half, this.flex.root, this.flex.tailZ) },
+      },
+      vertexShaderText: `
+        void vertexMain(VertexInput vsInput, inout czm_modelVertexOutput vsOutput) {
+          if (u_flex.x == 0.0) return;
+          vec4 pe = czm_modelView * vec4(vsOutput.positionMC, 1.0);
+          vec3 pa = (u_eyeToAir * pe).xyz;                 // aircraft frame: x left, y up, z nose
+          float s = clamp((abs(pa.x) - u_flex.z) / max(u_flex.y - u_flex.z, 0.5), 0.0, 1.0);
+          float wing = step(u_flex.w, pa.z);
+          float dy = u_flex.x * s * s * wing;
+          vec3 de = mat3(u_airToEye) * vec3(0.0, dy, 0.0);
+          vsOutput.positionMC = (czm_inverseModelView * vec4(pe.xyz + de, 1.0)).xyz;
+        }`,
+    });
+    this.model.customShader = this.flexShader;
+  }
+  /** Spring-damper wing deflection driven by the load factor; called every frame. */
+  private updateWingFlex(ac: Aircraft, dt: number) {
+    const f = this.flex;
+    if (!f.on || dt <= 0) return;
+    const load = ac.onGround ? 0 : clamp(ac.nz, -1.5, 3.5);
+    const target = f.tip * (load - 0.6);  // the model's shape is about 0.6 g: droops on the ground, bends up in flight
+    const w = 2 * Math.PI * f.freq, zeta = 0.12;
+    for (let t = 0; t < dt; t += 1 / 120) {
+      const h = Math.min(1 / 120, dt - t);
+      f.v += (w * w * (target - f.x) - 2 * zeta * w * f.v) * h;
+      f.x += f.v * h;
+    }
+  }
+  private updateFlexUniforms() {
+    const sh = this.flexShader, m = this.model;
+    if (!sh || !m) return;
+    const cm = (m as unknown as { sceneGraph?: { computedModelMatrix?: Cesium.Matrix4 } }).sceneGraph?.computedModelMatrix
+      ?? Cesium.Matrix4.multiply(m.modelMatrix, (Cesium.Axis as unknown as { Y_UP_TO_Z_UP: Cesium.Matrix4 }).Y_UP_TO_Z_UP, new Cesium.Matrix4());
+    const a2e = Cesium.Matrix4.multiply(this.scene.camera.viewMatrix, cm, new Cesium.Matrix4());
+    sh.setUniform('u_airToEye', a2e);
+    sh.setUniform('u_eyeToAir', Cesium.Matrix4.inverse(a2e, new Cesium.Matrix4()));
+    sh.setUniform('u_flex', new Cesium.Cartesian4(this.flex.x, this.flex.half, this.flex.root, this.flex.tailZ));
+  }
+
   /** Gear/flap poses (show the nearest pre-posed node) and spinning props/rotors of a FlightGear model. */
   private updateFgModel(ac: Aircraft, dt: number) {
     const fg = this.fg!, model = this.model!, off = fg.off;
@@ -582,7 +671,10 @@ export class World {
 
   // ───────────────────────── airport lighting (edge, centreline, approach, PAPI) ─────────────────────────
   updateAirportLights(ac: Aircraft, night: number, eye: { lat: number; lon: number; alt: number }) {
+    this.refineGeoid(ac);
     this.runways.offset = this.geoidOffset;
+    this.runways.show = !(this.tileset && this.tileset.show);
+    if (this.runways.primitive) this.runways.primitive.show = this.runways.show;
     this.runways.update(ac.lat, ac.lon);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {

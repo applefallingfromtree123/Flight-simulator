@@ -48,6 +48,10 @@ export function casToTas(cas: number, air: Air): number {
 
 export interface CloudLayer { base: number; top: number; cover: number } // metres MSL, cover 0..1 (oktas/8)
 
+/** A band of rough air: metres MSL, or above ground when agl. intensity 0..1 (light .. severe). */
+export interface TurbLayer { base: number; top: number; agl: boolean; intensity: number }
+/** Wind at a height (metres MSL), e.g. from pressure levels of a weather model. */
+export interface WindLevel { h: number; dir: number; spd: number; t?: number }
 export interface WeatherState {
   windDir: number;      // deg true FROM at surface
   windSpd: number;      // kt at surface
@@ -60,6 +64,9 @@ export interface WeatherState {
   qnh: number;          // hPa
   clouds: CloudLayer[];
   precip: 0 | 1 | 2 | 3; // none, light, moderate, heavy
+  /** Live weather: turbulence by altitude band and the wind profile aloft (replace the two-point model). */
+  turbLayers?: TurbLayer[];
+  windsAloft?: WindLevel[];
 }
 
 export const WEATHER_PRESETS: Record<string, { label: string; w: WeatherState }> = {
@@ -100,12 +107,36 @@ function noise1(t: number, seed: number) {
 }
 
 /** Wind vector in NED (m/s, direction the air moves TO) at altitude AGL/MSL. */
+/** Turbulence intensity 0..1 at a height: the preset value, or the strongest live band containing it (soft edges). */
+export function turbulenceAt(w: WeatherState, hMsl: number, agl: number): number {
+  let t = w.turbulence;
+  for (const L of w.turbLayers ?? []) {
+    const h = L.agl ? agl : hMsl;
+    const edge = Math.max(150, (L.top - L.base) * 0.15);
+    const f = clamp(Math.min(h - L.base, L.top - h) / edge + 0.5, 0, 1);
+    t = Math.max(t, L.intensity * f);
+  }
+  return t;
+}
+
 export function windAt(w: WeatherState, hMsl: number, agl: number, t: number): [number, number, number] {
   const k = clamp(hMsl / 9144, 0, 1);
   // boundary-layer log profile near the surface
   const bl = agl < 300 ? clamp(Math.log(Math.max(agl, 1) / 0.1) / Math.log(300 / 0.1), 0.35, 1) : 1;
   let dir = w.windDir + ((((w.windAloftDir - w.windDir) % 360) + 540) % 360 - 180) * k;
   let spd = (w.windSpd + (w.windAloftSpd - w.windSpd) * k) * (k < 0.05 ? bl : 1);
+  const prof = w.windsAloft;
+  if (prof?.length && hMsl - agl + 300 < hMsl) {
+    // live profile: blend from the surface wind into the pressure-level winds
+    const ground = hMsl - agl;
+    const pts = [{ h: ground + 10, dir: w.windDir, spd: w.windSpd }, ...prof.filter(p => p.h > ground + 100)];
+    let i = 1;
+    while (i < pts.length - 1 && pts[i].h < hMsl) i++;
+    const a = pts[i - 1], b = pts[Math.min(i, pts.length - 1)];
+    const f = b.h > a.h ? clamp((hMsl - a.h) / (b.h - a.h), 0, 1) : 1;
+    dir = a.dir + ((((b.dir - a.dir) % 360) + 540) % 360 - 180) * f;
+    spd = (a.spd + (b.spd - a.spd) * f) * (agl < 300 ? bl : 1);
+  }
   if (w.gust > w.windSpd && agl < 1500) {
     const gf = Math.max(0, noise1(t * 0.25, 11));
     spd += (w.gust - w.windSpd) * gf * (1 - agl / 1500);
@@ -113,8 +144,8 @@ export function windAt(w: WeatherState, hMsl: number, agl: number, t: number): [
   dir *= DEG;
   const v = spd * KT;
   const n = -Math.cos(dir) * v, e = -Math.sin(dir) * v;
-  const turb = w.turbulence * (agl < 600 ? 1 : 0.6) * (1 + 0.4 * Math.min(1, spd / 30));
-  const tn = noise1(t, 1) * turb * 3, te = noise1(t, 2) * turb * 3, td = noise1(t * 1.4, 3) * turb * 2.2 * clamp(agl / 30, 0, 1);
+  const turb = (w.turbLayers ? turbulenceAt(w, hMsl, agl) : w.turbulence * (agl < 600 ? 1 : 0.6)) * (1 + 0.4 * Math.min(1, spd / 30));
+  const tn = noise1(t, 1) * turb * 4.5, te = noise1(t, 2) * turb * 4.5, td = noise1(t * 1.4, 3) * turb * 4 * clamp(agl / 30, 0, 1);
   return [n + tn, e + te, td];
 }
 

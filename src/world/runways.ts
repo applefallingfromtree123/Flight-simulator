@@ -18,6 +18,9 @@ export class RunwayRenderer {
   private prim: Cesium.Primitive | null = null;
   private builtAt: { lat: number; lon: number } | null = null;
   offset = 0; // geoid offset (photoreal tiles)
+  /** Hidden over photorealistic 3D tiles, which already contain the real runway. */
+  show = true;
+  get primitive() { return this.prim; }
 
   constructor(private scene: Cesium.Scene, private db: AirportDB) {}
 
@@ -62,7 +65,7 @@ export class RunwayRenderer {
     mk(asphalt, '#3f4245', 'rwy-asphalt');
     mk(paint, '#e9ebe6', 'rwy-paint');
     if (!instances.length) return;
-    this.prim = this.scene.primitives.add(new Cesium.Primitive({
+    this.prim = this.scene.primitives.add(new Cesium.Primitive({ show: this.show,
       geometryInstances: instances,
       appearance: new Cesium.PerInstanceColorAppearance({ flat: false, translucent: false, closed: false }),
       asynchronous: false, compressVertices: false, allowPicking: false,
