@@ -347,3 +347,16 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 .mcp-grp label, .mcp-btn, .mwbtn { white-space: nowrap; }
 .mw { gap: 4px; }
 .mcp-btns { grid-auto-columns: max-content; }
+/* nothing in the side panels may be wider than the panel (iPad portrait / Chrome) */
+#menu .m-col { overflow-x: hidden; min-width: 0; }
+#menu .m-col * { max-width: 100%; }
+.r-add { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr) auto; }
+.r-add > * { min-width: 0; width: 100%; }
+.r-add select { text-overflow: ellipsis; }
+.job .frow { flex-wrap: wrap; }
+.job .frow button { flex: 1 1 auto; }
+.fl-row { min-width: 0; }
+.fl-row b, .fl-row span { min-width: 0; overflow-wrap: anywhere; }
+#menu { grid-template-columns: minmax(230px, 320px) minmax(0, 1fr) minmax(300px, 420px); }
+@media (max-width: 1100px) { #menu { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(290px, 360px); } }
+@media (max-width: 900px) { #menu { grid-template-columns: 0 minmax(0, 1fr) minmax(280px, 340px); } #menu #acList { display: none; } }
