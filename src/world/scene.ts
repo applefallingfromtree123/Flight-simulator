@@ -10,6 +10,7 @@ import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
 import { fgLivery, fgModelFor, type FgLiveAnim, type FgModel } from './fgModels.ts';
 import { Cockpit3D, type FgScreenFace } from './cockpit3d.ts';
+import { geoidHeight } from './geoid.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
@@ -300,6 +301,8 @@ export class World {
       const tileset = await Cesium.createGooglePhotorealistic3DTileset(viaIon ? { onlyUsingWithGoogleGeocoder: true } : { key, onlyUsingWithGoogleGeocoder: true },
         { maximumScreenSpaceError: this.tier >= 3 ? 8 : 12, cacheBytes: 512 * 1024 * 1024 });
       if (gen !== this.photorealGen) { tileset.destroy(); return; } // superseded while awaiting
+      // tiles take the aircraft's shadow but don't shadow themselves (photogrammetry meshes give heavy shadow acne)
+      tileset.shadows = Cesium.ShadowMode.RECEIVE_ONLY;
       this.scene.primitives.add(tileset);
       this.tileset = tileset;
       let loaded = false, failed = 0;
@@ -340,9 +343,14 @@ export class World {
    * runway lights and PAPIs sit on the photographed runway even when the one-off calibration failed.
    */
   private geoidT = 0;
+  /** Measured difference between the photographed runway and EGM96 sea level (photogrammetry error), metres. */
+  private geoidResidual = 0;
   private refineGeoid(ac: Aircraft) {
+    if (!this.tileset || !this.tileset.show) { this.geoidOffset = 0; return; }
+    // the EGM96 geoid gives the offset everywhere; a live measurement over runways only trims the last metres
+    this.geoidOffset = geoidHeight(ac.lat, ac.lon) + this.geoidResidual;
     const now = performance.now();
-    if (!this.tileset || !this.tileset.show || now - this.geoidT < 1500 || ac.agl > 600) return;
+    if (now - this.geoidT < 1500 || ac.agl > 600) return;
     this.geoidT = now;
     const g = this.elevation.ground(ac.lat, ac.lon);
     if (!g.runway) return;
@@ -350,24 +358,15 @@ export class World {
     let h: number | undefined;
     try { h = this.scene.sampleHeight(Cesium.Cartographic.fromDegrees(ac.lon, ac.lat), exclude); } catch { return; }
     if (h === undefined) return;
-    const target = clamp(h - g.h, -120, 120);
-    // first good sample snaps, later ones ease in (no visible jumps)
-    this.geoidOffset = Math.abs(target - this.geoidOffset) > 15 && !this.geoidFixed ? target : this.geoidOffset + (target - this.geoidOffset) * 0.3;
-    this.geoidFixed = true;
+    const r = h - g.h - geoidHeight(ac.lat, ac.lon);
+    if (Math.abs(r) > 8) return;  // a hangar roof, a half-loaded tile or a bad sample, not the runway
+    this.geoidResidual += (r - this.geoidResidual) * 0.3;
   }
-  private geoidFixed = false;
 
-  /** With photorealistic tiles (ellipsoidal heights), measure the MSL→ellipsoid offset at a runway. */
-  async calibrateGeoid(lat: number, lon: number, mslElev: number) {
-    this.geoidFixed = false;
-    if (!this.tileset) { this.geoidOffset = 0; return; }
-    try {
-      const c = Cesium.Cartographic.fromDegrees(lon, lat);
-      const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.lights, this.rwyLights].filter(Boolean) as object[];
-      const [r] = await Promise.race([this.scene.sampleHeightMostDetailed([c], exclude),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000))]);
-      if (r?.height !== undefined) { this.geoidOffset = clamp(r.height - mslElev, -120, 120); this.geoidFixed = true; }
-    } catch { /* keep previous */ }
+  /** With photorealistic tiles (ellipsoidal heights): sea level is the EGM96 geoid at the aircraft. */
+  async calibrateGeoid(lat: number, lon: number, _mslElev: number) {
+    this.geoidResidual = 0;
+    this.geoidOffset = this.tileset ? geoidHeight(lat, lon) : 0;
   }
 
   // ───────────────────────── aircraft model ─────────────────────────

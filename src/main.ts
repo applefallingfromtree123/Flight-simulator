@@ -20,10 +20,12 @@ import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
 import { AirportMap } from './world/worldMap.ts';
 import { loadFgModels } from './world/fgModels.ts';
+import { loadGeoid } from './world/geoid.ts';
 import { finishJob, saveCareer, type Job } from './career/career.ts';
 import { saveBest, scoreLanding, type Activity, type Touchdown } from './career/activities.ts';
 
 (window as unknown as { CESIUM_BASE_URL: string }).CESIUM_BASE_URL = CESIUM_BASE_URL;
+(window as unknown as { Cesium: typeof Cesium }).Cesium = Cesium; // for the diagnostics console / tests
 
 const $ = (id: string) => document.getElementById(id)!;
 const PHYS_DT = 1 / 120;
@@ -131,7 +133,7 @@ class App {
       throw new Error(`공항 데이터(data/airports.json)를 불러오지 못했습니다 — ${(e as Error).message}`);
     }
     loading('실제 기체 모델 목록 불러오는 중…');
-    await loadFgModels();
+    await Promise.all([loadFgModels(), loadGeoid()]);
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });
