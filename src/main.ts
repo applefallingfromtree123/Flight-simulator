@@ -113,7 +113,7 @@ class App {
     this.push = { on: false, dist: 0, done: !atGate };
     this.airlineDone = false;
     const seats = def.seats ?? 0;
-    const count = cfg.pax ?? (seats > 4 ? Math.round(seats * cfg.payloadPct / 100) : Math.min(seats, 1));
+    const count = def.cat === 'military' || def.cat === 'glider' ? 0 : cfg.pax ?? (seats > 4 ? Math.round(seats * cfg.payloadPct / 100) : Math.min(seats, 1));
     this.pax = count > 0 ? new Passengers(count, atGate, t => { if (this.menu.settings.volume > 0) speak(t, 'ko-KR', { rate: 1.05 }); toast(`📢 ${t}`); }) : null;
     this.atc = null;
     if (this.activity || def.cat === 'glider') { this.renderAtc(); return; }
@@ -612,7 +612,8 @@ class App {
     // shrink the 3D view above the instrument panel in cockpit view (horizon stays centred)
     const panelOn = this.flying && !document.body.classList.contains('nopanel') && this.world.view === 'cockpit';
     document.body.classList.toggle('c3d', panelOn && this.world.deck3d);
-    $('world').style.bottom = panelOn ? 'var(--panelH)' : '0';
+    // the 3D deck's autopilot bar floats over the view as glass; the classic 2D panel still takes its own space
+    $('world').style.bottom = panelOn && !this.world.deck3d ? 'var(--panelH)' : '0';
     $('panel').classList.toggle('hidden', !this.flying);
   }
 

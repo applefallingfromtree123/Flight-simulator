@@ -315,3 +315,35 @@ body.idle #topbar:hover { opacity: 1; }
   background: var(--glass); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 1px solid var(--glassLine); pointer-events: none; }
 .r-add { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 6px; margin-top: 8px; align-items: center; }
 .r-add button { white-space: nowrap; }
+
+/* ═════════ in-flight autopilot bar in the same glass style ═════════ */
+#panel { background: linear-gradient(180deg, rgba(14, 18, 26, 0.86), rgba(9, 12, 18, 0.92)); border-top: 1px solid var(--glassLine); }
+body.c3d #panel { left: 50%; right: auto; bottom: 10px; transform: translateX(-50%); width: min(1500px, calc(100vw - 20px)); height: auto;
+  border: 1px solid var(--glassLine); border-radius: 18px; overflow: hidden; background: var(--glass);
+  -webkit-backdrop-filter: blur(20px) saturate(1.3); backdrop-filter: blur(20px) saturate(1.3); box-shadow: 0 14px 44px rgba(0, 0, 0, 0.45); transition: opacity .4s; }
+body.c3d.idle #panel { opacity: 0.55; }
+body.c3d.idle #panel:hover { opacity: 1; }
+body.c3d #hudLayer { bottom: 0; }
+#mcp { background: none; border-bottom: 1px solid var(--glassLine); gap: 8px; padding: 8px 12px; align-items: center; scrollbar-width: none; }
+#mcp::-webkit-scrollbar { display: none; }
+.mcp-grp { background: rgba(255, 255, 255, 0.05); border: 1px solid var(--glassLine); border-radius: 12px; padding: 4px 8px 5px; min-width: 76px; gap: 2px; }
+.mcp-grp label { font: 600 10px "Inter", sans-serif; letter-spacing: 1.4px; color: var(--dim); }
+.mcp-val { font: 600 18px "B612 Mono", monospace; color: #ffbf47; background: rgba(0, 0, 0, 0.45); border-radius: 7px; padding: 1px 8px; min-width: 64px;
+  text-shadow: 0 0 10px rgba(255, 176, 32, 0.35); }
+.mcp-row button { border-radius: 6px; padding: 0 7px; background: rgba(255, 255, 255, 0.06); }
+.mcp-btns { gap: 5px; }
+.mcp-btn { font: 600 11px "Inter", sans-serif; letter-spacing: 0.6px; border-radius: 9px; padding: 5px 10px; min-width: 50px; background: rgba(255, 255, 255, 0.06); border-color: var(--glassLine); }
+.mcp-btn:hover { background: rgba(255, 255, 255, 0.14); }
+.mcp-btn.on { background: rgba(62, 224, 122, 0.16); border-color: rgba(62, 224, 122, 0.55); color: #c9ffd9; }
+.mcp-btn.on::after { left: 22%; right: 22%; top: 2px; height: 2px; border-radius: 2px; box-shadow: 0 0 6px var(--ok); }
+.mcp-btn.armed { background: rgba(53, 214, 240, 0.12); border-color: rgba(53, 214, 240, 0.5); }
+.mwbtn { border-radius: 9px; font: 700 10px "Inter", sans-serif; letter-spacing: 0.8px; background: rgba(255, 255, 255, 0.05); }
+#pedestal { background: none; font: 500 12px "Inter", "B612 Mono", sans-serif; letter-spacing: 0.3px; padding: 5px 14px 7px; gap: 18px; color: var(--dim); }
+#pedestal .pv { color: #7ff0a8; font-family: "B612 Mono", monospace; } #pedestal .pa { color: #ffbf47; font-family: "B612 Mono", monospace; }
+.thr-bar { border-radius: 4px; border-color: var(--glassLine); background: rgba(0, 0, 0, 0.4); overflow: hidden; }
+.thr-bar i { background: linear-gradient(90deg, #1d8fd6, #4cc2ff); }
+/* touch controls sit above the floating bar */
+body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
+.mcp-grp label, .mcp-btn, .mwbtn { white-space: nowrap; }
+.mw { gap: 4px; }
+.mcp-btns { grid-auto-columns: max-content; }
