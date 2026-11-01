@@ -36,6 +36,8 @@ export interface Settings {
   imagery: ImagerySource; googleKey: string; ionToken: string; photoreal: boolean;
   quality: 'low' | 'medium' | 'high' | 'ultra'; shadows: boolean; volume: number; autoMixture: boolean;
   deck3d: boolean;
+  /** Optional route guidance line (flight plan in the sky, taxi route on the ground). */
+  routeGuide?: boolean;
 }
 
 const DEF_CFG: FlightConfig = {

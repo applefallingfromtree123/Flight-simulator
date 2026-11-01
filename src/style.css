@@ -360,3 +360,14 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 #menu { grid-template-columns: minmax(230px, 320px) minmax(0, 1fr) minmax(300px, 420px); }
 @media (max-width: 1100px) { #menu { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr) minmax(290px, 360px); } }
 @media (max-width: 900px) { #menu { grid-template-columns: 0 minmax(0, 1fr) minmax(280px, 340px); } #menu #acList { display: none; } }
+/* EFB tablet */
+#efbwin { top: 60px; right: 20px; width: min(580px, 94vw); border-radius: 22px; border-width: 10px; border-color: #15181d; }
+#efbwin .win-head { border-radius: 12px 12px 0 0; }
+.efb-tabs { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }
+.efb-tabs button { flex: 1; border-radius: 999px; padding: 6px 8px; } .efb-tabs button.on { background: #fff; color: #0a0e14; }
+.efb-page h4 { margin: 8px 0 6px; font-size: 13px; }
+#efbMap { width: 100%; height: auto; border-radius: 12px; display: block; margin-bottom: 8px; }
+.efb-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.efb-grid button { padding: 12px 8px; font-size: 14px; border-radius: 12px; } .efb-grid button.on { background: rgba(76,194,255,.2); border-color: var(--accent); }
+.efb-grid button:disabled { opacity: .4; }
+.efb-opt { display: flex; gap: 8px; align-items: center; font-size: 13px; }

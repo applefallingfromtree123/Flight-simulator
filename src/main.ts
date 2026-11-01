@@ -24,6 +24,8 @@ import { loadGeoid } from './world/geoid.ts';
 import { airportLayout } from './world/gates.ts';
 import { Passengers, speak } from './sim/passengers.ts';
 import { Atc } from './atc/atc.ts';
+import { GroundServices, type Equipment } from './world/groundServices.ts';
+import { Efb } from './ui/efb.ts';
 import { callsignOf, flightEconomics, loadAirline, saveAirline } from './career/airline.ts';
 import { finishJob, saveCareer, type Job } from './career/career.ts';
 import { saveBest, scoreLanding, type Activity, type Touchdown } from './career/activities.ts';
@@ -72,6 +74,8 @@ class App {
   careerJob: Job | null = null;
   activity: Activity | null = null;
   pax: Passengers | null = null;
+  ground!: GroundServices;
+  efb!: Efb;
   atc: Atc | null = null;
   /** Pushback by the tug: metres pushed so far; done once the tug is disconnected. */
   private push: { on: boolean; dist: number; done: boolean } = { on: false, dist: 0, done: false };
@@ -137,8 +141,15 @@ class App {
     this.renderAtc();
     if (atGate) toast(`게이트 ${cfg.gate?.ref ?? ''}: 승객 탑승 중 · 무전으로 IFR 허가 → 푸시백 → 택시 (Ctrl+E 자동 시동)`);
   }
+  setEquipment(k: Equipment) {
+    if (!this.ac) return;
+    if (k !== 'none' && (!this.ac.onGround || this.ac.gs > KT)) { toast('정지한 상태에서만 연결할 수 있습니다'); return; }
+    void this.ground.connect(k, this.ac);
+    if (k !== 'none') toast(k === 'jetway' ? '탑승교 연결' : '계단차 연결');
+  }
   startPushback() {
     if (!this.ac || this.push.done) return;
+    if (this.ground.kind !== 'none') { this.ground.disconnect(); toast('탑승교·계단차 분리'); }
     this.ac.parkingBrake = false;
     this.push = { on: true, dist: 0, done: false };
     toast('푸시백 시작 — 러더(Q/E·RUDDER)로 꼬리 방향 조절, 다시 누르면 정지');
@@ -244,6 +255,17 @@ class App {
       $('errBanner').classList.remove('hidden');
     };
     this.hud = new HUD($('hudLayer'));
+    this.ground = new GroundServices(this.world.scene, objs => { this.world.groundObjects = objs; });
+    this.world.guideOn = !!s.routeGuide;
+    this.efb = new Efb($('efbwin'), {
+      ac: () => this.ac, fcs: () => this.fcs, dep: () => this.cfg ? this.db.get(this.cfg.dep) : undefined, arr: () => this.cfg ? this.db.get(this.cfg.arr) : undefined,
+      callsign: () => (this.cfg?.airlineRoute ? callsignOf(loadAirline()) : 'SkyLine 123'), pax: () => this.pax,
+      equipment: () => this.ground.kind, setEquipment: k => this.setEquipment(k), pushback: () => { if (!this.push.on) { this.push.done = false; this.startPushback(); } },
+      refuel: kg => { if (this.ac) { this.ac.fuel = kg; toast(`급유 완료: ${Math.round(kg).toLocaleString()} kg`); } },
+      guide: () => this.world.guideOn, setGuide: on => { this.world.guideOn = on; this.menu.settings.routeGuide = on; this.menu.saveSettings(); },
+      cruiseFt: () => this.cfg?.cruiseFt ?? 35000,
+      runwayLen: (apt, arr) => { if (!apt || !this.cfg) return 0; const id = arr ? this.cfg.arrRwy : this.cfg.depRwy; const e = runwayEnds(apt).find(r => r.end.ident === id) ?? [...runwayEnds(apt)].sort((a, b) => b.rw.length - a.rw.length)[0]; return e ? e.rw.length : 0; },
+    });
     this.world.deck3d = s.deck3d;
     $('btnDeck').textContent = deckLabel(s.deck3d);
     this.sound.volume = s.volume;
@@ -380,6 +402,12 @@ class App {
     if (this.careerJob) toast(`커리어 임무: ${this.careerJob.from} → ${this.careerJob.to} · 도착 후 정지하고 파킹 브레이크(또는 엔진 정지)하면 임무 완료`);
     if (this.liveWx) toast(this.liveWx.summary);
     this.setupCrew(cfg, dep, arr, def);
+    // at the stand: a jet bridge for airliners at a contact gate, airstairs otherwise
+    this.ground.disconnect();
+    if (cfg.start === 'gate' && (def.seats ?? 0) > 6) {
+      const big = def.cat === 'airliner' || def.cat === 'widebody';
+      void this.ground.connect(big && cfg.gate?.kind !== 'remote' ? 'jetway' : 'stairs', ac);
+    }
     if (this.activity) toast(this.activity.type === 'landing' ? `착륙 챌린지: ${this.activity.title} — 직접 조종해서 착륙하세요 (채점)` : `디스커버리: ${this.activity.title}`);
     if (cfg.start === 'cold') toast('Cold & Dark: 오버헤드(O)에서 시동 절차를 수행하거나 Ctrl+E로 자동 시동');
   }
@@ -620,6 +648,8 @@ class App {
   /** Leave the flight and return to the main menu (world map). */
   endFlight(tab?: 'career' | 'activities' | 'airline') {
     window.speechSynthesis?.cancel();
+    this.ground.disconnect();
+    $('efbwin').classList.add('hidden');
     $('atcwin').classList.add('hidden'); $('paxChip').classList.add('hidden');
     this.flying = false;
     this.touch.show(false, false);
@@ -646,6 +676,7 @@ class App {
     $('btnOverhead').onclick = () => this.action('overhead');
     $('btnChecklist').onclick = () => this.action('checklist');
     $('btnMap').onclick = () => this.action('map');
+    $('btnEfb').onclick = () => this.efb.toggle();
     $('btnAtc').onclick = () => { $('atcwin').classList.toggle('hidden'); this.renderAtc(); };
     $('btnWx').onclick = () => { $('wxwin').classList.toggle('hidden'); this.wxWinT = 0; this.updateWxWin(); };
     $('btnFms').onclick = () => this.action('fms');
@@ -779,6 +810,9 @@ class App {
         if (this.atcT <= 0) { this.atcT = 1; if (!$('atcwin').classList.contains('hidden')) this.renderAtc(); }
         if (this.atc.phase === 'done' && this.cfg?.airlineRoute) this.finishAirline();
       }
+      this.ground.update(ac, this.world.acMatrix, dtReal * rate, !!this.pax && this.pax.phase === 'boarding' && this.ground.kind === 'stairs');
+      this.world.updateGuide(ac, f.plan.wps, f.plan.active, this.cfg?.cruiseFt ?? 35000, f.plan.approach, this.atc?.taxiGuide() ?? null);
+      this.efb.tick(dtReal);
       if (this.pax) { $('paxChip').classList.remove('hidden'); $('paxChip').textContent = this.pax.phase === 'boarding' ? `탑승 중 ${Math.floor(this.pax.boarded)}/${this.pax.count}명` : `승객 ${this.pax.count}명 · 만족도 ${this.pax.label}`; }
       else $('paxChip').classList.add('hidden');
       this.updateWxWin();

@@ -128,7 +128,20 @@ export class Atc {
   /** Taxiway names for the taxi instruction (set once the airport layout is known). */
   setLayout(dep: AirportLayout | null, arrLayout: AirportLayout | null) {
     if (dep && this.s.stand) this.taxiVia = taxiRoute(dep, this.s.stand, this.s.depEnd).join(' ');
+    this.depLayout = dep;
     this.arrLayout = arrLayout;
+  }
+  private depLayout: AirportLayout | null = null;
+  private arrVia = '';
+  /** Ground guidance: the assigned taxiways (polylines) and where the taxi ends, while taxiing out or in. */
+  taxiGuide(): { ways: { lat: number; lon: number }[][]; to: { lat: number; lon: number } } | null {
+    const out = this.phase === 'cleared' || this.phase === 'push' || this.phase === 'taxi' || this.phase === 'holding';
+    const inb = this.phase === 'taxiin';
+    if (!out && !inb) return null;
+    const L = out ? this.depLayout : this.arrLayout, via = (out ? this.taxiVia : this.arrVia).split(' ').filter(Boolean);
+    const ways = L ? L.taxiways.filter(t => via.includes(t.ref)).map(t => t.pts) : [];
+    const to = out ? this.s.depEnd : this.arrStand;
+    return to ? { ways, to } : null;
   }
   private arrLayout: AirportLayout | null = null;
 
@@ -213,6 +226,7 @@ export class Atc {
           if (stand) {
             this.arrStand = stand;
             const via = this.arrLayout ? taxiRoute(this.arrLayout, ac, stand).join(' ') : '';
+            this.arrVia = via;
             this.atc(`taxi to stand ${digits(stand.ref)}${via ? ` via ${via.split(' ').map(digits).join(', ')}` : ''}`, `${stand.ref}번 주기장으로 택시${via ? ` (경유 ${via})` : ''}`, () => { this.phase = 'taxiin'; });
             this.pilot(`Taxi to stand ${digits(stand.ref)}`, '복창');
           } else this.atc('taxi to the apron, welcome', '계류장으로 택시하세요', () => { this.phase = 'taxiin'; });

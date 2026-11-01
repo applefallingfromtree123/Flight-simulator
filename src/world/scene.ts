@@ -347,21 +347,83 @@ export class World {
   private geoidResidual = 0;
   private refineGeoid(ac: Aircraft) {
     if (!this.tileset || !this.tileset.show) { this.geoidOffset = 0; return; }
-    // the EGM96 geoid gives the offset everywhere; a live measurement over runways only trims the last metres
+    // the EGM96 geoid gives the offset everywhere; near the ground the photographed surface itself is measured
+    // (aprons and stands too, where our elevation data can be metres off), so the wheels stay on the tiles
     this.geoidOffset = geoidHeight(ac.lat, ac.lon) + this.geoidResidual;
     const now = performance.now();
-    if (now - this.geoidT < 1500 || ac.agl > 600) return;
+    if (now - this.geoidT < 700 || ac.agl > 60) return;
     this.geoidT = now;
-    const g = this.elevation.ground(ac.lat, ac.lon);
-    if (!g.runway) return;
-    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights].filter(Boolean) as object[];
-    let h: number | undefined;
-    try { h = this.scene.sampleHeight(Cesium.Cartographic.fromDegrees(ac.lon, ac.lat), exclude); } catch { return; }
-    if (h === undefined) return;
-    const r = h - g.h - geoidHeight(ac.lat, ac.lon);
-    if (Math.abs(r) > 8) return;  // a hangar roof, a half-loaded tile or a bad sample, not the runway
-    this.geoidResidual += (r - this.geoidResidual) * 0.3;
+    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, ...this.groundObjects].filter(Boolean) as object[];
+    const N = geoidHeight(ac.lat, ac.lon);
+    const res: number[] = [];
+    // centre and four points a wingspan-ish away: the lower ones are the ground, not a roof or a jet bridge
+    const r = Math.max(12, ac.def.b * 0.45);
+    for (const [dn, de] of [[0, 0], [r, 0], [-r, 0], [0, r], [0, -r]]) {
+      const lat = ac.lat + dn / 111320, lon = ac.lon + de / (111320 * Math.cos(ac.lat * Math.PI / 180));
+      let h: number | undefined;
+      try { h = this.scene.sampleHeight(Cesium.Cartographic.fromDegrees(lon, lat), exclude); } catch { /* */ }
+      if (h === undefined) continue;
+      res.push(h - this.elevation.ground(lat, lon).h - N);
+    }
+    if (res.length < 3) return;
+    res.sort((a, b) => a - b);
+    const target = res[Math.floor((res.length - 1) / 2) - (res.length > 3 ? 1 : 0)];  // a low-median
+    if (Math.abs(target) > 25) return;
+    this.geoidResidual += (target - this.geoidResidual) * (Math.abs(target - this.geoidResidual) > 4 ? 0.7 : 0.3);
   }
+  // ───────────────────────── route guidance line (optional) ─────────────────────────
+  guideOn = false;
+  private guide: Cesium.PolylineCollection | null = null;
+  private guideT = 0;
+  /**
+   * In the air: a magenta line along the rest of the flight plan at the planned heights, down the ILS final.
+   * On the ground: the assigned taxiways in yellow and a line from the aircraft to where the taxi ends.
+   */
+  updateGuide(ac: Aircraft, wps: { lat: number; lon: number; ident: string }[], active: number, cruiseFt: number,
+    approach: { thr: { lat: number; lon: number }; elev: number; crs: number } | null | undefined,
+    taxi: { ways: { lat: number; lon: number }[][]; to: { lat: number; lon: number } } | null) {
+    if (!this.guide) this.guide = this.scene.primitives.add(new Cesium.PolylineCollection());
+    const G = this.guide!;
+    G.show = this.guideOn;
+    if (!this.guideOn) return;
+    const now = performance.now();
+    if (now - this.guideT < 800) return;
+    this.guideT = now;
+    G.removeAll();
+    const off = this.geoidOffset;
+    const C = (lat: number, lon: number, h: number) => Cesium.Cartesian3.fromDegrees(lon, lat, h + off);
+    if (ac.onGround || ac.agl < 15) {
+      if (!taxi) return;
+      const gh = (p: { lat: number; lon: number }) => this.elevation.ground(p.lat, p.lon).h + 0.6;
+      const yellow = Cesium.Material.fromType('PolylineGlow', { color: Cesium.Color.fromCssColorString('#ffd23f'), glowPower: 0.25 });
+      for (const w of taxi.ways) if (w.length > 1) G.add({ positions: w.map(p => C(p.lat, p.lon, gh(p))), width: 9, material: yellow });
+      const dash = Cesium.Material.fromType('PolylineDash', { color: Cesium.Color.fromCssColorString('#ffd23f'), dashLength: 24 });
+      G.add({ positions: [C(ac.lat, ac.lon, gh(ac)), C(taxi.to.lat, taxi.to.lon, gh(taxi.to))], width: 5, material: dash });
+      return;
+    }
+    const pts: Cesium.Cartesian3[] = [C(ac.lat, ac.lon, ac.alt)];
+    const last = wps[wps.length - 1];
+    const prof = (p: { lat: number; lon: number }) => {
+      if (!approach) return cruiseFt * 0.3048;
+      const dNm = distance(p, approach.thr) / 1852;
+      return Math.min(cruiseFt * 0.3048, approach.elev + dNm * 318 * 0.3048);
+    };
+    for (let i = Math.max(1, active); i < wps.length; i++) {
+      const w = wps[i];
+      if (approach && w === last) break;
+      pts.push(C(w.lat, w.lon, Math.max(prof(w), Math.min(ac.alt, prof(w) + 3000))));
+    }
+    if (approach) {
+      // ILS final: 10 NM out at the glide slope, down to the threshold
+      const faf = destination(approach.thr, approach.crs + 180, 10 * 1852);
+      pts.push(C(faf.lat, faf.lon, approach.elev + Math.tan(3 * Math.PI / 180) * 10 * 1852));
+      pts.push(C(approach.thr.lat, approach.thr.lon, approach.elev + 15));
+    } else if (last) pts.push(C(last.lat, last.lon, prof(last)));
+    if (pts.length > 1) G.add({ positions: pts, width: 7, material: Cesium.Material.fromType('PolylineGlow', { color: Cesium.Color.fromCssColorString('#e45bf2').withAlpha(0.9), glowPower: 0.2 }) });
+  }
+
+  /** Ground equipment (jet bridge, stairs, people) — excluded when measuring the ground. */
+  groundObjects: object[] = [];
 
   /** With photorealistic tiles (ellipsoidal heights): sea level is the EGM96 geoid at the aircraft. */
   async calibrateGeoid(lat: number, lon: number, _mslElev: number) {
