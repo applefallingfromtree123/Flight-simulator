@@ -260,7 +260,7 @@ input, select { background: rgba(0, 0, 0, 0.35); border: 1px solid var(--glassLi
 .home-top h1 span { color: var(--accent); }
 .home-top h1 small { display: block; font-size: 13px; letter-spacing: 7px; font-weight: 500; opacity: 0.8; margin-top: 8px; }
 .home-top > div { display: flex; gap: 8px; }
-.home-cards { margin-top: auto; display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr 1fr; gap: 14px; height: min(46vh, 380px); pointer-events: auto; }
+.home-cards { margin-top: auto; display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr; gap: 14px; height: min(46vh, 380px); pointer-events: auto; }
 .h-card { position: relative; border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 16px; background-size: cover; background-position: center; display: flex; flex-direction: column; justify-content: flex-end;
   align-items: flex-start; text-align: left; padding: 18px; overflow: hidden; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.5); transition: transform .18s, box-shadow .18s, border-color .18s; }
 .h-card:hover, .h-card:focus-visible { transform: translateY(-6px); border-color: #fff; box-shadow: 0 26px 60px rgba(0, 0, 0, 0.6); }
@@ -299,3 +299,19 @@ body.idle #topbar:hover { opacity: 1; }
 .tb-row { display: grid; grid-template-columns: 52px 1fr 56px; align-items: center; gap: 6px; font: 11px "B612 Mono", monospace; color: var(--dim); }
 .tb-row i { display: block; height: 8px; border-radius: 4px; min-width: 2px; }
 .tb-row.me { color: #fff; } .tb-row.me b { color: var(--accent); }
+.fl-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--glassLine); font-size: 12px; }
+.fl-row button { margin-left: auto; padding: 3px 10px; } .fl-row button + button { margin-left: 0; }
+.mk-list { max-height: 320px; overflow: auto; }
+/* ATC radio panel and passenger chip */
+#atcwin { top: 60px; left: 20px; width: min(430px, 92vw); }
+#atcwin .atc-freq { display: flex; justify-content: space-between; align-items: center; font: 600 13px "B612 Mono", monospace; color: #ffd27a; margin-bottom: 6px; }
+#atcwin .atc-log { max-height: 220px; overflow: auto; display: flex; flex-direction: column; gap: 5px; font-size: 12px; margin-bottom: 8px; }
+#atcwin .atc-log div { padding: 5px 8px; border-radius: 8px; background: rgba(255,255,255,0.05); }
+#atcwin .atc-log div.pilot { background: rgba(76,194,255,0.14); align-self: flex-end; text-align: right; }
+#atcwin .atc-log small { display: block; color: #9fe0ff; margin-top: 2px; }
+#atcwin .atc-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+#atcwin .atc-btns .primary { flex: 1; }
+#paxChip { position: absolute; top: 56px; right: 16px; z-index: 9; padding: 6px 12px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--glass); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 1px solid var(--glassLine); pointer-events: none; }
+.r-add { display: grid; grid-template-columns: 1fr 1.5fr auto; gap: 6px; margin-top: 8px; align-items: center; }
+.r-add button { white-space: nowrap; }

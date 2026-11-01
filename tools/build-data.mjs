@@ -36,6 +36,19 @@ const dir = process.argv[2];
 const airports = parseCSV(await load('airports', dir));
 const runways = parseCSV(await load('runways', dir));
 const navaids = parseCSV(await load('navaids', dir));
+const freqs = parseCSV(await load('airport-frequencies', dir));
+// ATC frequencies per airport: ATIS, clearance delivery, ground, tower, approach, departure, unicom/CTAF (MHz)
+const FT_KIND = [['ATIS', /ATIS/], ['DEL', /DEL|CLD|CLNC/], ['GND', /GND|GROUND|SMC/], ['TWR', /TWR|TOWER/], ['APP', /APP|ARR|RADAR/], ['DEP', /DEP/], ['CTAF', /CTAF|UNIC|AFIS|A\/G|MULT/]];
+const freqByApt = new Map();
+for (const f of freqs) {
+  const mhz = +f.frequency_mhz;
+  if (!mhz || mhz < 108 || mhz > 137) continue;
+  const kind = FT_KIND.find(([, rx]) => rx.test((f.type || '').toUpperCase()))?.[0];
+  if (!kind) continue;
+  const m = freqByApt.get(f.airport_ident) ?? {};
+  if (!m[kind]) m[kind] = Math.round(mhz * 1000) / 1000;
+  freqByApt.set(f.airport_ident, m);
+}
 
 const HARD = /ASP|CON|PEM|BIT|ASPH|CONC|TAR|MAC/i;
 const rwyByApt = new Map();
@@ -66,7 +79,7 @@ for (const a of airports) {
   if (t === 1 && !rw.some(r => r[12])) continue;
   out.push([
     a.ident, a.name, r5(+a.latitude_deg), r5(+a.longitude_deg), Math.round(+a.elevation_ft || 0), t,
-    a.iso_country, a.municipality, a.iata_code, rw,
+    a.iso_country, a.municipality, a.iata_code, rw, freqByApt.get(a.ident) ?? 0,
   ]);
 }
 out.sort((a, b) => b[5] - a[5]);
@@ -80,6 +93,8 @@ for (const n of navaids) {
 }
 
 fs.mkdirSync(OUT, { recursive: true });
-fs.writeFileSync(path.join(OUT, 'airports.json'), JSON.stringify(out));
-fs.writeFileSync(path.join(OUT, 'navaids.json'), JSON.stringify(nav));
+for (const dirOut of [OUT, path.resolve(OUT, '../../../public/data')]) {
+  fs.writeFileSync(path.join(dirOut, 'airports.json'), JSON.stringify(out));
+  fs.writeFileSync(path.join(dirOut, 'navaids.json'), JSON.stringify(nav));
+}
 console.log(`airports: ${out.length}, navaids: ${nav.length}`);

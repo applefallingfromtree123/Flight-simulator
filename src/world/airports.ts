@@ -8,13 +8,15 @@ export interface Runway { le: RunwayEnd; he: RunwayEnd; length: number; width: n
 export interface Airport {
   icao: string; name: string; lat: number; lon: number; elev: number; size: 1 | 2 | 3;
   country: string; city: string; iata: string; runways: Runway[];
+  /** Real ATC frequencies (MHz) where known: ATIS, DEL, GND, TWR, APP, DEP, CTAF. */
+  freq: Partial<Record<'ATIS' | 'DEL' | 'GND' | 'TWR' | 'APP' | 'DEP' | 'CTAF', number>>;
 }
 export interface Navaid { ident: string; name: string; type: string; freq: number; lat: number; lon: number; elev: number; magVar: number }
 
 const NAV_TYPES = ['', 'VOR', 'VOR-DME', 'VORTAC', 'TACAN', 'NDB', 'NDB-DME', 'DME'];
 
 type RawRwy = [string, number, number, number | null, number, string, number, number, number | null, number, number, number, number, number];
-type RawApt = [string, string, number, number, number, 1 | 2 | 3, string, string, string, RawRwy[]];
+type RawApt = [string, string, number, number, number, 1 | 2 | 3, string, string, string, RawRwy[], (Record<string, number> | 0)?];
 type RawNav = [string, string, number, number, number, number, number, number];
 
 class Grid<T> {
@@ -56,7 +58,7 @@ export class AirportDB {
 
   ingest(apts: RawApt[], navs: RawNav[]) {
     for (const r of apts) {
-      const apt: Airport = { icao: r[0], name: r[1], lat: r[2], lon: r[3], elev: r[4] * FT, size: r[5], country: r[6], city: r[7], iata: r[8], runways: [] };
+      const apt: Airport = { icao: r[0], name: r[1], lat: r[2], lon: r[3], elev: r[4] * FT, size: r[5], country: r[6], city: r[7], iata: r[8], runways: [], freq: (r[10] || {}) as Airport['freq'] };
       for (const w of r[9]) {
         const le: RunwayEnd = { ident: w[0], lat: w[1], lon: w[2], elev: (w[3] ?? r[4]) * FT, disp: w[4] * FT, hdg: 0 };
         const he: RunwayEnd = { ident: w[5], lat: w[6], lon: w[7], elev: (w[8] ?? r[4]) * FT, disp: w[9] * FT, hdg: 0 };

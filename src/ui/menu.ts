@@ -10,6 +10,8 @@ import { liveriesFor, getLivery } from '../world/liveries.ts';
 import { FG_PREFIX, fgLivery, fgModelFor } from '../world/fgModels.ts';
 import { SPECS } from '../sim/specs.ts';
 import { ACTIVITIES, loadBest, type Activity } from '../career/activities.ts';
+import { airportLayout, type Stand } from '../world/gates.ts';
+import { renderAirline } from './airlineUi.ts';
 import { liveWeatherCached, reportLine } from '../sim/liveWeather.ts';
 import { CLASS_LABEL, LICENCES, allowed, classOf, eligibleAircraft, generateJobs, jobTitle, licenceOf, loadCareer, newCareer, nextLicence, payloadPct, saveCareer, type CareerState, type Job } from '../career/career.ts';
 
@@ -17,7 +19,11 @@ export interface FlightConfig {
   aircraftId: string;
   /** livery id per aircraft type */
   livery: Record<string, string>;
-  dep: string; depRwy: string; start: 'runway' | 'cold' | 'final' | 'cruise' | 'air';
+  dep: string; depRwy: string; start: 'gate' | 'runway' | 'cold' | 'final' | 'cruise' | 'air';
+  /** Gate start: the stand to park at (from OpenStreetMap). */
+  gate?: Stand;
+  /** Airline flight: the route flown and the passengers booked. */
+  airlineRoute?: string; pax?: number;
   arr: string; arrRwy: string; route: string; cruiseFt: number;
   fuelPct: number; payloadPct: number;
   time: 'now' | 'dawn' | 'morning' | 'afternoon' | 'dusk' | 'night';
@@ -56,10 +62,11 @@ export class Menu {
   onMapView: (lat: number, lon: number, height: number) => void = () => {};
   onMapSel: (dep?: Airport, arr?: Airport, focus?: Airport) => void = () => {};
   onCareerFly: (c: FlightConfig, job: Job) => void = () => {};
+  onAirlineFly: (c: FlightConfig) => void = () => {};
   onCareerAbandon: () => void = () => {};
   onActivity: (c: FlightConfig, a: Activity) => void = () => {};
   career: CareerState | null = loadCareer();
-  tab: 'home' | 'plan' | 'aircraft' | 'career' | 'activities' | 'settings' | 'help' = 'home';
+  tab: 'home' | 'plan' | 'aircraft' | 'career' | 'airline' | 'activities' | 'settings' | 'help' = 'home';
   private focus: Airport | undefined;
   private shownOnce = false;
   private canResume = false;
@@ -128,6 +135,7 @@ export class Menu {
       <div class="home-cards">
         ${card('plan', 'free', '자유 비행', '전 세계 9,560개 공항 · 실제 날씨', true)}
         ${card('career', 'career', '커리어', lic ? `${lic} · $${this.career!.money.toLocaleString()}` : '학생 조종사부터 대형기 기장까지')}
+        ${card('airline', 'airline', '항공사 운영', '기단 · 노선 · 승객 · 수익')}
         ${card('activities', 'activities', '액티비티', '착륙 챌린지 · 디스커버리 비행')}
         ${card('aircraft', 'aircraft', '기체 · 도색', '실제 기체 모델 45종 · 실제 항공사 도색')}
         ${card('settings', 'settings', '설정', '그래픽 · 3D 도시 · 조종 장치')}
@@ -151,6 +159,7 @@ export class Menu {
           <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}">자유 비행</button>
           <button data-tab="aircraft" class="${this.tab === 'aircraft' ? 'on' : ''}">기종 · 도색</button>
           <button data-tab="career" class="${this.tab === 'career' ? 'on' : ''}">커리어</button>
+          <button data-tab="airline" class="${this.tab === 'airline' ? 'on' : ''}">항공사</button>
           <button data-tab="activities" class="${this.tab === 'activities' ? 'on' : ''}">액티비티</button>
           <button data-tab="settings" class="${this.tab === 'settings' ? 'on' : ''}">설정</button>
           <button data-tab="help" class="${this.tab === 'help' ? 'on' : ''}">조작법</button>
@@ -186,6 +195,7 @@ export class Menu {
     if (this.tab === 'plan') this.renderPlan(right);
     else if (this.tab === 'aircraft') this.renderAircraftInfo(right);
     else if (this.tab === 'career') this.renderCareer(right);
+    else if (this.tab === 'airline') renderAirline(right, this.db, (c, routeId, pax) => this.onAirlineFly({ ...this.cfg, ...c, airlineRoute: routeId, pax }));
     else if (this.tab === 'activities') this.renderActivities(right);
     else if (this.tab === 'settings') this.renderSettings(right);
     else right.innerHTML = KEY_HELP;
@@ -299,12 +309,14 @@ export class Menu {
         ${this.aptField('dep', '출발 공항', c.dep)}
         <div class="frow"><div class="field"><label>활주로</label><select id="depRwy"></select></div>
         <div class="field"><label>시작 위치</label><select id="start">
+          <option value="gate">게이트 (탑승 · 푸시백 · 관제)</option>
           <option value="runway">활주로 정렬 (엔진 가동)</option>
           <option value="cold">활주로 Cold & Dark</option>
           <option value="final">도착 최종접근 10NM</option>
           <option value="cruise">순항 고도</option>
           <option value="air">공중 시작 (3000ft AGL)</option>
         </select></div></div>
+        <div class="field" id="gateField"><label>게이트 / 주기장</label><select id="gate"><option>불러오는 중…</option></select></div>
       </div>
       <div class="sec"><h3>도착 / 경로</h3>
         ${this.aptField('arr', '도착 공항', c.arr)}
@@ -386,7 +398,7 @@ export class Menu {
         inp.value = c[id];
         fillRwy($(rwyId), c[id], ''); c[rwyId] = ($(rwyId) as HTMLSelectElement).value;
         info(id, c[id]); updRoute();
-        if (apt && id === 'dep') this.onPreview(apt);
+        if (apt && id === 'dep') { this.onPreview(apt); c.gate = undefined; fillGates(); }
         this.syncMap();
       };
       inp.onchange = commit;
@@ -396,7 +408,26 @@ export class Menu {
     c.depRwy = ($('depRwy') as HTMLSelectElement).value; c.arrRwy = ($('arrRwy') as HTMLSelectElement).value;
     ($('depRwy') as HTMLSelectElement).onchange = e => { c.depRwy = (e.target as HTMLSelectElement).value; };
     ($('arrRwy') as HTMLSelectElement).onchange = e => { c.arrRwy = (e.target as HTMLSelectElement).value; };
-    ($('start') as HTMLSelectElement).onchange = e => { c.start = (e.target as HTMLSelectElement).value as never; };
+    // gates of the departure airport (OpenStreetMap stands, or remote stands where none are mapped)
+    const fillGates = () => {
+      const field = $('gateField'), sel = $('gate') as HTMLSelectElement;
+      field.classList.toggle('hidden', c.start !== 'gate');
+      const apt = this.db.get(c.dep);
+      if (c.start !== 'gate' || !apt) return;
+      sel.innerHTML = '<option>불러오는 중…</option>';
+      airportLayout(apt).then(L => {
+        if (this.db.get(c.dep) !== apt) return;
+        sel.innerHTML = L.stands.map((s, i) => `<option value="${i}">${s.kind === 'gate' ? '게이트' : s.kind === 'remote' ? '원격 주기장' : '주기장'} ${s.ref}</option>`).join('')
+          + (L.source === 'generated' ? '' : '');
+        const keep = L.stands.findIndex(s => c.gate && s.ref === c.gate.ref && Math.abs(s.lat - c.gate.lat) < 0.01);
+        sel.value = String(keep >= 0 ? keep : 0);
+        c.gate = L.stands[+sel.value];
+        sel.onchange = () => { c.gate = L.stands[+sel.value]; };
+        $('gateField').querySelector('label')!.textContent = `게이트 / 주기장 (${L.source === 'osm' ? `OpenStreetMap ${L.stands.length}곳` : '지도 정보 없음 — 원격 주기장'})`;
+      });
+    };
+    ($('start') as HTMLSelectElement).onchange = e => { c.start = (e.target as HTMLSelectElement).value as never; fillGates(); };
+    fillGates();
     ($('time') as HTMLSelectElement).onchange = e => { c.time = (e.target as HTMLSelectElement).value as never; };
     ($('weather') as HTMLSelectElement).onchange = e => { c.weather = (e.target as HTMLSelectElement).value; };
     $<HTMLInputElement>('cruise').onchange = e => { c.cruiseFt = +(e.target as HTMLInputElement).value || 10000; };

@@ -12,7 +12,7 @@ export const KEY_ACTIONS: Record<string, string> = {
   'Digit1': 'view-cockpit', 'Digit2': 'view-hud', 'Digit3': 'view-chase', 'Digit4': 'view-tower', 'Digit5': 'view-flyby', 'Digit6': 'view-free',
   'KeyL': 'lights', 'Ctrl+KeyE': 'autostart', 'KeyB': 'baro', 'Shift+KeyB': 'baro-std', 'KeyC': 'checklist', 'KeyM': 'map',
   'KeyO': 'overhead', 'Escape': 'menu', 'KeyR': 'reset', 'Space': 'master-ack', 'KeyF': 'fd', 'Shift+KeyR': 'rev-toggle',
-  'KeyI': 'sas', 'Tab': 'panel-toggle', 'KeyX': 'ap-disconnect',
+  'KeyI': 'sas', 'Tab': 'panel-toggle', 'KeyX': 'ap-disconnect', 'Shift+KeyP': 'pushback', 'Backslash': 'atc',
 };
 
 export class Controls {

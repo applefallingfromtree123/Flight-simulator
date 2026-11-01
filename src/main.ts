@@ -21,6 +21,10 @@ import type { AvData } from './avionics/common.ts';
 import { AirportMap } from './world/worldMap.ts';
 import { loadFgModels } from './world/fgModels.ts';
 import { loadGeoid } from './world/geoid.ts';
+import { airportLayout } from './world/gates.ts';
+import { Passengers, speak } from './sim/passengers.ts';
+import { Atc } from './atc/atc.ts';
+import { callsignOf, flightEconomics, loadAirline, saveAirline } from './career/airline.ts';
 import { finishJob, saveCareer, type Job } from './career/career.ts';
 import { saveBest, scoreLanding, type Activity, type Touchdown } from './career/activities.ts';
 
@@ -67,6 +71,11 @@ class App {
   // career flight tracking
   careerJob: Job | null = null;
   activity: Activity | null = null;
+  pax: Passengers | null = null;
+  atc: Atc | null = null;
+  /** Pushback by the tug: metres pushed so far; done once the tug is disconnected. */
+  private push: { on: boolean; dist: number; done: boolean } = { on: false, dist: 0, done: false };
+  private airlineDone = false;
   /** Live weather in use: where/when it was fetched (refreshed as the flight moves on). */
   private liveWx: { at: { lat: number; lon: number; time: number }; summary: string; report?: WxReport; busy?: boolean } | null = null;
   private wxWinT = 0;
@@ -98,6 +107,94 @@ class App {
     const timer = setTimeout(() => ctl.abort(), 8000);
     try { return await fetchLiveWeather(lat, lon, ctl.signal); } finally { clearTimeout(timer); }
   }
+  /** Passengers and ATC for this flight. */
+  private setupCrew(cfg: FlightConfig, dep: Airport, arr: Airport | undefined, def: ReturnType<typeof getAircraft>) {
+    const atGate = cfg.start === 'gate';
+    this.push = { on: false, dist: 0, done: !atGate };
+    this.airlineDone = false;
+    const seats = def.seats ?? 0;
+    const count = cfg.pax ?? (seats > 4 ? Math.round(seats * cfg.payloadPct / 100) : Math.min(seats, 1));
+    this.pax = count > 0 ? new Passengers(count, atGate, t => { if (this.menu.settings.volume > 0) speak(t, 'ko-KR', { rate: 1.05 }); toast(`📢 ${t}`); }) : null;
+    this.atc = null;
+    if (this.activity || def.cat === 'glider') { this.renderAtc(); return; }
+    const ends = runwayEnds(dep);
+    const depEnd = (ends.find(r => r.end.ident === cfg.depRwy) ?? [...ends].sort((a, b) => b.rw.length - a.rw.length)[0])?.end;
+    if (!depEnd) return;
+    const arrEnd = arr ? (runwayEnds(arr).find(r => r.end.ident === cfg.arrRwy) ?? runwayEnds(arr)[0])?.end : undefined;
+    const al = cfg.airlineRoute ? loadAirline() : null;
+    this.atc = new Atc({
+      callsign: callsignOf(al), dep, depEnd, arr: arr && arr !== dep ? arr : undefined, arrEnd, cruiseFt: cfg.cruiseFt, atGate, stand: cfg.gate,
+      wind: () => ({ dir: this.weather.windDir, spd: this.weather.windSpd }),
+      boarded: () => !this.pax || this.pax.boardingDone,
+      enginesRunning: () => this.ac!.engines.some(e => e.running),
+      onPushback: () => this.startPushback(),
+      pushDone: () => this.push.done,
+    }, this.ac!);
+    this.atc.muted = this.menu.settings.volume === 0;
+    this.atc.onChange = () => this.renderAtc();
+    Promise.all([airportLayout(dep), arr ? airportLayout(arr) : Promise.resolve(null)]).then(([d, a]) => this.atc?.setLayout(d, a)).catch(() => {});
+    $('atcwin').classList.remove('hidden');
+    this.renderAtc();
+    if (atGate) toast(`게이트 ${cfg.gate?.ref ?? ''}: 승객 탑승 중 · 무전으로 IFR 허가 → 푸시백 → 택시 (Ctrl+E 자동 시동)`);
+  }
+  startPushback() {
+    if (!this.ac || this.push.done) return;
+    this.ac.parkingBrake = false;
+    this.push = { on: true, dist: 0, done: false };
+    toast('푸시백 시작 — 러더(Q/E·RUDDER)로 꼬리 방향 조절, 다시 누르면 정지');
+  }
+  private stopPushback() {
+    const ac = this.ac!;
+    this.push = { on: false, dist: this.push.dist, done: true };
+    ac.vel = [0, 0, 0]; ac.w = [0, 0, 0];
+    ac.parkingBrake = true;
+    toast('푸시백 완료 — 토잉카 분리. 파킹브레이크 설정됨');
+  }
+  private atcT = 0;
+  renderAtc() {
+    const win = $('atcwin');
+    const a = this.atc;
+    if (!a) { win.classList.add('hidden'); return; }
+    const req = a.request;
+    win.querySelector('.win-body')!.innerHTML = `
+      <div class="atc-freq"><span>${a.freq.station}</span><span>${a.freq.mhz.toFixed(3)}</span></div>
+      <div class="atc-log">${a.log.slice(-6).map(l => `<div class="${l.who}"><b>${l.who === 'atc' ? l.station : l.station}</b> ${l.text}<small>${l.ko}</small></div>`).join('')}</div>
+      <div class="atc-btns">${req ? `<button class="primary" id="atcReq">${req.label}</button>` : ''}<button id="atcAgain">다시</button><button id="atcMute">${a.muted ? '음성 켜기' : '음성 끄기'}</button></div>`;
+    const log = win.querySelector('.atc-log')!; log.scrollTop = log.scrollHeight;
+    const rq = win.querySelector<HTMLButtonElement>('#atcReq');
+    if (rq && req) rq.onclick = () => { req.send(); this.renderAtc(); };
+    win.querySelector<HTMLButtonElement>('#atcAgain')!.onclick = () => a.sayAgain();
+    win.querySelector<HTMLButtonElement>('#atcMute')!.onclick = () => { a.muted = !a.muted; if (a.muted) window.speechSynthesis?.cancel(); this.renderAtc(); };
+  }
+  /** Airline flight finished at the destination: pay out by passengers and how they felt. */
+  private finishAirline() {
+    const cfg = this.cfg!, ac = this.ac!;
+    if (this.airlineDone || !cfg.airlineRoute) return;
+    const al = loadAirline();
+    const r = al?.routes.find(x => x.id === cfg.airlineRoute);
+    if (!al || !r || !this.pax) return;
+    this.airlineDone = true;
+    const e = flightEconomics(al, { ...r, from: cfg.dep, to: cfg.arr }, this.db);
+    const c = this.pax.comfort;
+    const revenue = Math.round(this.pax.count * r.fare * (0.85 + 0.3 * c / 100));
+    const bonus = c > 90 ? Math.round(revenue * 0.05) : 0;
+    const profit = revenue + bonus - e.cost;
+    al.cash += profit;
+    al.rep = Math.max(0, Math.min(100, al.rep + (c - 70) / 15));
+    const p = al.fleet.find(x => x.id === r.planeId);
+    if (p) { p.hours += e.hours; p.condition = Math.max(10, p.condition - e.hours * 0.06 - (this.job.fpm ?? 0) / 300); }
+    saveAirline(al);
+    $('resultTitle').textContent = `${callsignOf(al)} 운항 완료`;
+    $('resultBody').innerHTML = `<div class="res-pay ${profit >= 0 ? 'ok' : 'bad'}">${profit >= 0 ? '+' : '−'}$${Math.abs(profit).toLocaleString()}</div>
+      <table class="spec-t"><tr><td>승객</td><td>${this.pax.count}명</td></tr><tr><td>승객 만족도</td><td>${this.pax.label}</td></tr>
+      <tr><td>운임 수입</td><td>$${revenue.toLocaleString()}${bonus ? ` (+보너스 $${bonus.toLocaleString()})` : ''}</td></tr><tr><td>운항 비용</td><td>$${e.cost.toLocaleString()}</td></tr>
+      <tr><td>평판</td><td>${Math.round(al.rep)}/100</td></tr>${this.pax.notes.map(n => `<tr><td></td><td>${n}</td></tr>`).join('')}</table>`;
+    $('resultCareer').textContent = '항공사 화면으로';
+    $('resultwin').classList.remove('hidden');
+    this.paused = true;
+    void ac;
+  }
+
   /** Refresh live weather every 10 minutes or 150 km, and tell the pilot when the air gets rough. */
   private updateLiveWeather() {
     const ac = this.ac!, lw = this.liveWx;
@@ -160,6 +257,7 @@ class App {
       if (!this.flying) { this.world.flyOverview(apt.lat, apt.lon); this.map.view(apt.lat, apt.lon, 900_000, 2); }
       void this.world.elevation.preload(apt.lat, apt.lon, 10000);
     };
+    this.menu.onAirlineFly = c => { this.sound.init(); this.careerJob = null; this.activity = null; void this.startFlight(c); };
     this.menu.onCareerFly = (c, job) => { this.sound.init(); this.careerJob = job; this.activity = null; void this.startFlight(c); };
     this.menu.onCareerAbandon = () => {
       const car = this.menu.career;
@@ -281,6 +379,7 @@ class App {
     toast(`${dep.icao} ${cfg.start === 'final' && arr ? '→ ' + arr.icao + ' 최종접근' : ''} · ${def.name} · QNH ${Math.round(w.qnh)}`);
     if (this.careerJob) toast(`커리어 임무: ${this.careerJob.from} → ${this.careerJob.to} · 도착 후 정지하고 파킹 브레이크(또는 엔진 정지)하면 임무 완료`);
     if (this.liveWx) toast(this.liveWx.summary);
+    this.setupCrew(cfg, dep, arr, def);
     if (this.activity) toast(this.activity.type === 'landing' ? `착륙 챌린지: ${this.activity.title} — 직접 조종해서 착륙하세요 (채점)` : `디스커버리: ${this.activity.title}`);
     if (cfg.start === 'cold') toast('Cold & Dark: 오버헤드(O)에서 시동 절차를 수행하거나 Ctrl+E로 자동 시동');
   }
@@ -305,6 +404,22 @@ class App {
       ac.flapIdx = n <= 1 ? 0 : def.flaps === 'ga' || def.flaps === 'split' || def.flaps === 'bizjet' || def.flaps === 'fighter' ? 1 : Math.min(2, n - 1);
       ac.flapPos = ac.aero.flaps[ac.flapIdx].deg;
     };
+    if (start === 'gate') {
+      // parked at a stand: power on, engines off, parking brake set; boarding, then push and start
+      const stand = cfg.gate ?? (await airportLayout(dep)).stands[0];
+      cfg.gate = stand;
+      await this.world.elevation.preload(stand.lat, stand.lon);
+      const h = this.world.elevation.ground(stand.lat, stand.lon).h;
+      ac.place(stand.lat, stand.lon, h + ac.restHeight(), stand.hdg, 0);
+      ac.groundH = h;
+      sys.setReady(false);
+      sys.sw.nav = true; sys.sw.beacon = false;
+      ac.parkingBrake = true;
+      for (const c of ac.engineCmd) c.throttle = 0;
+      fcs.selHdg = Math.round(wrap360(depEnd.end.hdg - magVar(stand.lat, stand.lon))) || 360;
+      fcs.selSpd = def.fdm === 'rotor' ? 80 : Math.round(Math.min(250, def.v.vmo - 20, (def.v.v2 ?? def.v.vr + 10) + 40));
+      return;
+    }
     if (start === 'runway' || start === 'cold') {
       const p = lineUp(depEnd.end);
       void this.world.elevation.preload(p.lat, p.lon);
@@ -432,6 +547,8 @@ class App {
       case 'flaps-full': ac.flapIdx = n - 1; toast(`FLAPS ${ac.flapLabel}`); break;
       case 'spoilers': ac.speedbrake = ac.speedbrake > 0 ? 0 : 1; ac.spoilerArm = false; toast(ac.speedbrake ? 'SPEED BRAKE EXTEND' : 'SPEED BRAKE RETRACT'); break;
       case 'spoilers-arm': ac.spoilerArm = !ac.spoilerArm; toast(ac.spoilerArm ? 'GROUND SPOILERS ARMED' : 'GROUND SPOILERS DISARMED'); break;
+      case 'pushback': if (this.push.on) this.stopPushback(); else if (ac.onGround && ac.gs < KT) { this.push.done = false; this.startPushback(); } break;
+      case 'atc': $('atcwin').classList.toggle('hidden'); this.renderAtc(); break;
       case 'parking-brake': ac.parkingBrake = !ac.parkingBrake; toast(ac.parkingBrake ? 'PARKING BRAKE SET' : 'PARKING BRAKE RELEASED'); break;
       case 'ap': f.engageAp(!f.ap); break;
       case 'ap-disconnect': if (f.ap) f.engageAp(false); break;
@@ -500,7 +617,9 @@ class App {
   }
 
   /** Leave the flight and return to the main menu (world map). */
-  endFlight(tab?: 'career' | 'activities') {
+  endFlight(tab?: 'career' | 'activities' | 'airline') {
+    window.speechSynthesis?.cancel();
+    $('atcwin').classList.add('hidden'); $('paxChip').classList.add('hidden');
     this.flying = false;
     this.touch.show(false, false);
     document.body.classList.remove('flying', 'c3d');
@@ -526,6 +645,7 @@ class App {
     $('btnOverhead').onclick = () => this.action('overhead');
     $('btnChecklist').onclick = () => this.action('checklist');
     $('btnMap').onclick = () => this.action('map');
+    $('btnAtc').onclick = () => { $('atcwin').classList.toggle('hidden'); this.renderAtc(); };
     $('btnWx').onclick = () => { $('wxwin').classList.toggle('hidden'); this.wxWinT = 0; this.updateWxWin(); };
     $('btnFms').onclick = () => this.action('fms');
     $('btnMenu').onclick = () => this.openMenu();
@@ -540,7 +660,7 @@ class App {
     $('errBannerOpen').onclick = () => { $('diagwin').classList.remove('hidden'); this.diagT = 0; this.updateDiag(); };
     $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
     $('crashRetry').onclick = () => { if (this.cfg) void this.startFlight(this.cfg); };
-    $('resultCareer').onclick = () => { $('resultwin').classList.add('hidden'); $('crash').classList.add('hidden'); this.endFlight(this.activity ? 'activities' : 'career'); };
+    $('resultCareer').onclick = () => { $('resultwin').classList.add('hidden'); $('crash').classList.add('hidden'); this.endFlight(this.cfg?.airlineRoute ? 'airline' : this.activity ? 'activities' : 'career'); };
     $('resultStay').onclick = () => { $('resultwin').classList.add('hidden'); this.paused = false; };
     $('crashMenu').onclick = () => { $('crash').classList.add('hidden'); this.endFlight(); };
     document.querySelectorAll<HTMLElement>('.window').forEach(w => {
@@ -621,6 +741,15 @@ class App {
       let steps = 0;
       const env = { weather: this.weather, ground: (la: number, lo: number) => this.world.elevation.ground(la, lo), time: this.world.viewer.clock.currentTime.secondsOfDay };
       while (this.acc >= PHYS_DT && steps < 240) {
+        if (this.push.on) {
+          // the tug pushes tail-first at walking pace; rudder input swings the tail
+          const spd = 1.5;
+          ac.parkingBrake = false; ac.brakeL = ac.brakeR = 0;
+          ac.vel = [-Math.cos(ac.psi) * spd, -Math.sin(ac.psi) * spd, ac.vel[2]];
+          ac.w = [0, 0, -c.yaw * 0.09];
+          this.push.dist += spd * PHYS_DT;
+          if (this.push.dist > 70) this.stopPushback();
+        }
         f.update(PHYS_DT, pin);
         ac.step(PHYS_DT, env);
         this.acc -= PHYS_DT; steps++;
@@ -638,9 +767,19 @@ class App {
         }
         s.events.push('touchdown');
         this.job.fpm = fpm;
+        if (this.pax && ac.gs > 20 * KT) this.pax.touchdown(fpm);
       }
       if (this.careerJob) this.trackJob(dtReal * rate);
       this.updateLiveWeather();
+      if (this.pax) this.pax.update(dtReal * rate, ac, turbulenceAt(this.weather, ac.alt, ac.agl));
+      if (this.atc) {
+        this.atc.update();
+        this.atcT -= dtReal;
+        if (this.atcT <= 0) { this.atcT = 1; if (!$('atcwin').classList.contains('hidden')) this.renderAtc(); }
+        if (this.atc.phase === 'done' && this.cfg?.airlineRoute) this.finishAirline();
+      }
+      if (this.pax) { $('paxChip').classList.remove('hidden'); $('paxChip').textContent = this.pax.phase === 'boarding' ? `탑승 중 ${Math.floor(this.pax.boarded)}/${this.pax.count}명` : `승객 ${this.pax.count}명 · 만족도 ${this.pax.label}`; }
+      else $('paxChip').classList.add('hidden');
       this.updateWxWin();
       if (this.activity?.type === 'landing') this.trackLanding(dtReal * rate);
       if (ac.crash) {
