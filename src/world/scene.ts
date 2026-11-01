@@ -13,6 +13,7 @@ import { Cockpit3D, type FgScreenFace } from './cockpit3d.ts';
 import { geoidHeight } from './geoid.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
+import { AirportScenery } from './airportScenery.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
 
 export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'sentinel2' | 'osm';
@@ -107,6 +108,9 @@ export class World {
   private tileset: Cesium.Cesium3DTileset | null = null;
   geoidOffset = 0;
   runways: RunwayRenderer;
+  /** Our own airport buildings, jet bridges, aprons, taxiways and roads. */
+  scenery: AirportScenery;
+  private sceneryModel: object | null = null;
   view: ViewMode = 'cockpit';
   head = { yaw: 0, pitch: 0, zoom: 1 };
   chase = { yaw: 180, pitch: -8, dist: 1 };
@@ -166,6 +170,8 @@ export class World {
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
+    this.scenery = new AirportScenery(s, db, this.elevation);
+    this.scenery.onModel = m => { this.sceneryModel = m; };
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
     s.preRender.addEventListener(() => this.updateFlexUniforms());
@@ -353,7 +359,7 @@ export class World {
     const now = performance.now();
     if (now - this.geoidT < 700 || ac.agl > 60) return;
     this.geoidT = now;
-    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, ...this.groundObjects].filter(Boolean) as object[];
+    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, this.sceneryModel, ...this.groundObjects].filter(Boolean) as object[];
     const N = geoidHeight(ac.lat, ac.lon);
     const res: number[] = [];
     // centre and four points a wingspan-ish away: the lower ones are the ground, not a roof or a jet bridge
@@ -736,6 +742,7 @@ export class World {
     this.runways.offset = this.geoidOffset;
     this.runways.setDrape(!!(this.tileset && this.tileset.show));
     this.runways.update(ac.lat, ac.lon);
+    this.scenery.update(ac.lat, ac.lon, this.geoidOffset, night > 0.5);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {
       this.rwyLightsAt = { lat: ac.lat, lon: ac.lon };

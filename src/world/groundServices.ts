@@ -26,7 +26,7 @@ export class GroundServices {
     return { x, y: -r * 0.98, sill: Math.min(h0 - 0.3, r * 0.45), h0, r };
   }
 
-  async connect(kind: Equipment, ac: Aircraft) {
+  async connect(kind: Equipment, ac: Aircraft, anchor?: [number, number]) {
     this.disconnect();
     if (kind === 'none') return;
     const gen = ++this.gen;
@@ -41,9 +41,11 @@ export class GroundServices {
       const cab: P3 = [x, y - 2.0, floor - 1.35];
       box(metal, cab, [3.2, 3.2, 2.9]);
       box(dark, [x, y - 0.35, floor - 1.2], [2.6, 0.5, 2.5]);  // bellows canopy around the door
-      const rot: P3 = [x + 9, y - 30, ground - 4.6];
-      cyl(metal, [cab[0], cab[1] - 1.5, cab[2]], [rot[0], rot[1] + 2, rot[2]], 1.55, 1.55, 4);
-      cyl(glass, [cab[0] + 0.1, cab[1] - 1.6, cab[2] - 0.2], [rot[0] + 0.1, rot[1] + 2.1, rot[2] - 0.2], 1.25, 1.25, 4, false, false);
+      // rotunda: at the terminal's jet bridge for this stand when there is one, else off to the left
+      const rot: P3 = anchor ? [anchor[0], anchor[1], ground - 4.6] : [x + 9, y - 30, ground - 4.6];
+      const ry = anchor ? 0 : 2;
+      cyl(metal, [cab[0], cab[1] - 1.5, cab[2]], [rot[0], rot[1] + ry, rot[2]], 1.55, 1.55, 4);
+      cyl(glass, [cab[0] + 0.1, cab[1] - 1.6, cab[2] - 0.2], [rot[0] + 0.1, rot[1] + ry + 0.1, rot[2] - 0.2], 1.25, 1.25, 4, false, false);
       cyl(metal, rot, [rot[0], rot[1], rot[2] - 3.2], 2.4, 2.4, 16);          // rotunda
       cyl(dark, [rot[0], rot[1], rot[2]], [rot[0], rot[1], ground], 0.7, 0.7, 12); // its column
       const mid: P3 = [(cab[0] + rot[0]) / 2, (cab[1] + rot[1]) / 2, (cab[2] + rot[2]) / 2 + 1.6];

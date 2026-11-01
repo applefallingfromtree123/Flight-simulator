@@ -12,7 +12,7 @@ export interface EfbCtx {
   ac: () => Aircraft | null; fcs: () => FCS; dep: () => Airport | undefined; arr: () => Airport | undefined;
   callsign: () => string; pax: () => { count: number; boarded: number; label: string } | null;
   equipment: () => Equipment; setEquipment: (k: Equipment) => void; pushback: () => void; refuel: (kg: number) => void;
-  guide: () => boolean; setGuide: (on: boolean) => void; cruiseFt: () => number; runwayLen: (apt: Airport | undefined, arr: boolean) => number;
+  guide: () => boolean; setGuide: (on: boolean) => void; scenery: () => boolean; setScenery: (on: boolean) => void; cruiseFt: () => number; runwayLen: (apt: Airport | undefined, arr: boolean) => number;
 }
 
 type Tab = 'ofp' | 'perf' | 'map' | 'wx' | 'ground' | 'opt';
@@ -109,7 +109,8 @@ export class Efb {
           <p class="note">탑승교·계단차가 연결된 채로 푸시백하면 자동으로 분리됩니다.</p>`;
       }
       case 'opt':
-        return `<label class="efb-opt"><input type="checkbox" id="efbGuide" ${this.ctx.guide() ? 'checked' : ''}> 항로 안내선 표시 (하늘: 비행 경로·ILS 최종접근 / 지상: 택시 경로)</label>`;
+        return `<label class="efb-opt"><input type="checkbox" id="efbGuide" ${this.ctx.guide() ? 'checked' : ''}> 항로 안내선 표시 (하늘: 비행 경로·ILS 최종접근 / 지상: 택시 경로)</label>
+          <label class="efb-opt"><input type="checkbox" id="efbScen" ${this.ctx.scenery() ? 'checked' : ''}> 공항 시설 표시 (터미널·격납고·관제탑·탑승교·유도로·도로)</label>`;
     }
   }
 
@@ -131,6 +132,8 @@ export class Efb {
     q('#efbZo')?.addEventListener('click', () => { this.mapZoom = Math.min(1280, this.mapZoom * 2); this.drawMap(); });
     const g = q('#efbGuide') as HTMLInputElement | null;
     if (g) g.onchange = () => this.ctx.setGuide(g.checked);
+    const sc = q('#efbScen') as HTMLInputElement | null;
+    if (sc) sc.onchange = () => this.ctx.setScenery(sc.checked);
   }
 
   /** North-up moving map: route, airports, the aircraft and its track. */

@@ -21,7 +21,8 @@
     "aircraft:web": "python3 tools/fgconv/web.py --out public/aircraft"
   },
   "dependencies": {
-    "cesium": "^1.145.0"
+    "cesium": "^1.145.0",
+    "earcut": "^3.0.2"
   },
   "devDependencies": {
     "@gltf-transform/core": "^4.5.1",

@@ -38,6 +38,8 @@ export interface Settings {
   deck3d: boolean;
   /** Optional route guidance line (flight plan in the sky, taxi route on the ground). */
   routeGuide?: boolean;
+  /** Our own airport buildings, jet bridges, taxiways and roads. */
+  airportScenery?: boolean;
 }
 
 const DEF_CFG: FlightConfig = {

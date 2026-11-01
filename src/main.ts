@@ -144,12 +144,26 @@ class App {
   setEquipment(k: Equipment) {
     if (!this.ac) return;
     if (k !== 'none' && (!this.ac.onGround || this.ac.gs > KT)) { toast('정지한 상태에서만 연결할 수 있습니다'); return; }
-    void this.ground.connect(k, this.ac);
+    this.connectGround(k);
     if (k !== 'none') toast(k === 'jetway' ? '탑승교 연결' : '계단차 연결');
+  }
+  /** Connect ground equipment; a jet bridge swings out from the parked one at this stand when the terminal has one. */
+  private connectGround(k: Equipment) {
+    const ac = this.ac;
+    if (!ac) return;
+    const rot = k === 'jetway' ? this.world.scenery.jetwayFor(ac) : null;
+    this.world.scenery.hideJetway(rot ? { lat: ac.lat, lon: ac.lon } : null);
+    let anchor: [number, number] | undefined;
+    if (rot) {
+      const dN = (rot.lat - ac.lat) * DEG * 6371008.8, dE = (rot.lon - ac.lon) * DEG * 6371008.8 * Math.cos(ac.lat * DEG);
+      const h = ac.psi;
+      anchor = [dN * Math.cos(h) + dE * Math.sin(h), -dN * Math.sin(h) + dE * Math.cos(h)];
+    }
+    void this.ground.connect(k, ac, anchor);
   }
   startPushback() {
     if (!this.ac || this.push.done) return;
-    if (this.ground.kind !== 'none') { this.ground.disconnect(); toast('탑승교·계단차 분리'); }
+    if (this.ground.kind !== 'none') { this.ground.disconnect(); this.world.scenery.hideJetway(null); toast('탑승교·계단차 분리'); }
     this.ac.parkingBrake = false;
     this.push = { on: true, dist: 0, done: false };
     toast('푸시백 시작 — 러더(Q/E·RUDDER)로 꼬리 방향 조절, 다시 누르면 정지');
@@ -257,12 +271,14 @@ class App {
     this.hud = new HUD($('hudLayer'));
     this.ground = new GroundServices(this.world.scene, objs => { this.world.groundObjects = objs; });
     this.world.guideOn = !!s.routeGuide;
+    this.world.scenery.enabled = s.airportScenery !== false;
     this.efb = new Efb($('efbwin'), {
       ac: () => this.ac, fcs: () => this.fcs, dep: () => this.cfg ? this.db.get(this.cfg.dep) : undefined, arr: () => this.cfg ? this.db.get(this.cfg.arr) : undefined,
       callsign: () => (this.cfg?.airlineRoute ? callsignOf(loadAirline()) : 'SkyLine 123'), pax: () => this.pax,
       equipment: () => this.ground.kind, setEquipment: k => this.setEquipment(k), pushback: () => { if (!this.push.on) { this.push.done = false; this.startPushback(); } },
       refuel: kg => { if (this.ac) { this.ac.fuel = kg; toast(`급유 완료: ${Math.round(kg).toLocaleString()} kg`); } },
       guide: () => this.world.guideOn, setGuide: on => { this.world.guideOn = on; this.menu.settings.routeGuide = on; this.menu.saveSettings(); },
+      scenery: () => this.world.scenery.enabled, setScenery: on => { this.world.scenery.enabled = on; this.menu.settings.airportScenery = on; this.menu.saveSettings(); },
       cruiseFt: () => this.cfg?.cruiseFt ?? 35000,
       runwayLen: (apt, arr) => { if (!apt || !this.cfg) return 0; const id = arr ? this.cfg.arrRwy : this.cfg.depRwy; const e = runwayEnds(apt).find(r => r.end.ident === id) ?? [...runwayEnds(apt)].sort((a, b) => b.rw.length - a.rw.length)[0]; return e ? e.rw.length : 0; },
     });
@@ -406,8 +422,13 @@ class App {
     this.ground.disconnect();
     if (cfg.start === 'gate' && (def.seats ?? 0) > 6) {
       const big = def.cat === 'airliner' || def.cat === 'widebody';
-      void this.ground.connect(big && cfg.gate?.kind !== 'remote' ? 'jetway' : 'stairs', ac);
-    }
+      const kind = big && cfg.gate?.kind !== 'remote' ? 'jetway' : 'stairs';
+      this.connectGround(kind);
+      // once the airport's own buildings are up, swing the jet bridge out from the terminal's one at this stand
+      if (kind === 'jetway') void this.world.scenery.built(dep.icao).then(() => {
+        if (this.ac === ac && this.ground.kind === 'jetway' && ac.onGround && ac.gs < 1) this.connectGround('jetway');
+      });
+    } else this.world.scenery.hideJetway(null);
     if (this.activity) toast(this.activity.type === 'landing' ? `착륙 챌린지: ${this.activity.title} — 직접 조종해서 착륙하세요 (채점)` : `디스커버리: ${this.activity.title}`);
     if (cfg.start === 'cold') toast('Cold & Dark: 오버헤드(O)에서 시동 절차를 수행하거나 Ctrl+E로 자동 시동');
   }
@@ -648,7 +669,7 @@ class App {
   /** Leave the flight and return to the main menu (world map). */
   endFlight(tab?: 'career' | 'activities' | 'airline') {
     window.speechSynthesis?.cancel();
-    this.ground.disconnect();
+    this.ground.disconnect(); this.world.scenery.hideJetway(null);
     $('efbwin').classList.add('hidden');
     $('atcwin').classList.add('hidden'); $('paxChip').classList.add('hidden');
     this.flying = false;

@@ -460,7 +460,7 @@ export function writeGlb(nodes: NodeDef[], images: { data: Uint8Array; mime: str
     const prims: object[] = [];
     for (const p of nd.parts) {
       if (!p.idx.length) continue;
-      const key = `${p.color}|${p.metal}|${p.rough}|${p.alpha}|${p.tex ?? ''}`;
+      const key = `${p.color}|${p.metal}|${p.rough}|${p.alpha}|${p.tex ?? ''}|${p.emissive ?? ''}`;
       let mi = matIndex.get(key);
       if (mi === undefined) {
         mi = materials.length;
@@ -468,6 +468,7 @@ export function writeGlb(nodes: NodeDef[], images: { data: Uint8Array; mime: str
           pbrMetallicRoughness: { baseColorFactor: [...hexToRgb(p.color), p.alpha], metallicFactor: p.metal, roughnessFactor: p.rough,
             ...(p.tex !== undefined && images[p.tex] ? { baseColorTexture: { index: p.tex } } : {}) },
           doubleSided: true,
+          ...(p.emissive ? { emissiveFactor: hexToRgb(p.emissive) } : {}),
           ...(p.alpha < 1 ? { alphaMode: 'BLEND' } : {}),
         });
         matIndex.set(key, mi);

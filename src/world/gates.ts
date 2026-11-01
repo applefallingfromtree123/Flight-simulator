@@ -102,16 +102,98 @@ export function taxiRoute(layout: AirportLayout, from: LatLon, to: LatLon): stri
   return out.slice(0, 4);
 }
 
-function generated(apt: Airport): AirportLayout {
+/** Frame of a generated airport: along the longest runway, the terminal side to its right. */
+export function genPlan(apt: Airport) {
   const rw = [...apt.runways].sort((a, b) => b.length - a.length)[0];
-  if (!rw) return { stands: [{ ref: 'A1', lat: apt.lat, lon: apt.lon, hdg: 0, kind: 'remote' }], taxiways: [], source: 'generated' };
+  if (!rw) return null;
   const mid = { lat: (rw.le.lat + rw.he.lat) / 2, lon: (rw.le.lon + rw.he.lon) / 2 };
-  const side = (rw.le.hdg + 90) % 360;
-  const base = destination(mid, side, 260 + rw.width);
+  const side = (rw.le.hdg + 90) % 360, along = rw.le.hdg;
+  const W = Math.max(18, rw.width), L = rw.length;
+  const big = apt.size >= 2;
+  const nStands = apt.size === 3 ? 10 : apt.size === 2 ? 6 : 4;
+  const pitch = big ? 80 : 45;
+  const standOff = W / 2 + (big ? 330 : 200);       // stand centres from the runway centreline
+  const twyOff = W / 2 + (big ? 170 : 110);         // parallel taxiway
+  const laneOff = standOff - (big ? 55 : 32);       // apron taxilane behind the tails
+  const at = (off: number, a: number) => destination(destination(mid, side, off), along, a);
+  return { rw, mid, side, along, W, L, big, nStands, pitch, standOff, twyOff, laneOff, at };
+}
+
+function generated(apt: Airport): AirportLayout {
+  const g = genPlan(apt);
+  if (!g) return { stands: [{ ref: 'A1', lat: apt.lat, lon: apt.lon, hdg: 0, kind: 'remote' }], taxiways: [], source: 'generated' };
   const stands: Stand[] = [];
-  for (let i = 0; i < 8; i++) {
-    const p = destination(base, rw.le.hdg, (i - 3.5) * 85);
-    stands.push({ ref: `R${i + 1}`, lat: p.lat, lon: p.lon, hdg: side, kind: 'remote' });
+  for (let i = 0; i < g.nStands; i++) {
+    const p = g.at(g.standOff, (i - (g.nStands - 1) / 2) * g.pitch);
+    stands.push({ ref: `${g.big ? '' : 'R'}${i + 1}`, lat: p.lat, lon: p.lon, hdg: g.side, kind: g.big ? 'gate' : 'remote' });
   }
-  return { stands, taxiways: [], source: 'generated' };
+  // parallel taxiway, connectors at both ends and the middle, and the apron taxilane
+  const half = g.L / 2 - 60, span = ((g.nStands - 1) / 2) * g.pitch + 60;
+  const taxiways: Taxiway[] = [
+    { ref: 'A', pts: [g.at(g.twyOff, -half), g.at(g.twyOff, half)] },
+    { ref: 'A1', pts: [g.at(0, -half), g.at(g.twyOff, -half)] },
+    { ref: 'A2', pts: [g.at(0, 0), g.at(g.twyOff, 0)] },
+    { ref: 'A3', pts: [g.at(0, half), g.at(g.twyOff, half)] },
+    { ref: 'B', pts: [g.at(g.laneOff, -span), g.at(g.laneOff, span)] },
+    { ref: 'B1', pts: [g.at(g.twyOff, -span), g.at(g.laneOff, -span)] },
+    { ref: 'B2', pts: [g.at(g.twyOff, span), g.at(g.laneOff, span)] },
+  ];
+  return { stands, taxiways, source: 'generated' };
+}
+
+// ───────────── airport scenery (buildings, aprons, taxiways, roads) from OpenStreetMap ─────────────
+export interface OsmWay { pts: LatLon[]; tags: Record<string, string> }
+export interface SceneryData { buildings: OsmWay[]; aprons: OsmWay[]; taxiways: OsmWay[]; roads: OsmWay[]; parking: OsmWay[]; holds: LatLon[]; towers: OsmWay[] }
+
+const sceneryCache = new Map<string, Promise<SceneryData | null>>();
+/** Buildings, aprons, taxiways and roads of the airport (null when OpenStreetMap can't be reached). */
+export function airportScenery(apt: Airport): Promise<SceneryData | null> {
+  let p = sceneryCache.get(apt.icao);
+  if (!p) { p = fetchScenery(apt).catch(() => null); sceneryCache.set(apt.icao, p); }
+  return p;
+}
+
+async function fetchScenery(apt: Airport): Promise<SceneryData> {
+  const d = apt.size === 3 ? 0.045 : 0.03, dLat = d, dLon = d / Math.cos(apt.lat * Math.PI / 180);
+  const bb = `${(apt.lat - dLat).toFixed(4)},${(apt.lon - dLon).toFixed(4)},${(apt.lat + dLat).toFixed(4)},${(apt.lon + dLon).toFixed(4)}`;
+  const roads = 'motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|service';
+  const q = `[out:json][timeout:25];(way["aeroway"="aerodrome"](${bb});relation["aeroway"="aerodrome"](${bb}););map_to_area->.ar;(` +
+    `node["aeroway"~"^(holding_position|control_tower)$"](${bb});way["aeroway"~"^(taxiway|taxilane|apron|terminal|hangar|control_tower)$"](${bb});` +
+    `way["building"](area.ar);way["highway"~"^(${roads})$"](area.ar);way["amenity"="parking"](area.ar);node["man_made"="tower"]["tower:type"="observation"](area.ar););out geom;`;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 30000);
+  try {
+    const r = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', body: 'data=' + encodeURIComponent(q), signal: ctl.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    if (!r.ok) throw new Error(`overpass ${r.status}`);
+    const j = await r.json() as { elements: OsmEl[] };
+    const out: SceneryData = { buildings: [], aprons: [], taxiways: [], roads: [], parking: [], holds: [], towers: [] };
+    const seen = new Set<string>();
+    for (const e of j.elements as (OsmEl & { id?: number })[]) {
+      const t = e.tags ?? {};
+      const key = `${e.type}${e.id ?? Math.random()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (e.type === 'node') {
+        if (e.lat === undefined || e.lon === undefined) continue;
+        if (t.aeroway === 'holding_position') out.holds.push({ lat: e.lat, lon: e.lon });
+        else out.towers.push({ pts: [{ lat: e.lat, lon: e.lon }], tags: t });
+        continue;
+      }
+      const g = e.geometry?.filter(Boolean);
+      if (!g || g.length < 2) continue;
+      const w: OsmWay = { pts: g, tags: t };
+      if (t.aeroway === 'taxiway' || t.aeroway === 'taxilane') out.taxiways.push(w);
+      else if (t.aeroway === 'apron') out.aprons.push(w);
+      else if (t.aeroway === 'control_tower') out.towers.push(w);
+      else if (t.highway) out.roads.push(w);
+      else if (t.amenity === 'parking' && !t.building) out.parking.push(w);
+      else if (t.building || t.aeroway === 'terminal' || t.aeroway === 'hangar') {
+        if (t.building === 'roof' && !t.aeroway) continue;
+        if (/tower/.test(t['man_made'] ?? '') || t['tower:type'] === 'observation' || t.building === 'control_tower') out.towers.push(w);
+        else out.buildings.push(w);
+      }
+    }
+    return out;
+  } finally { clearTimeout(timer); }
 }
