@@ -371,3 +371,5 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 .efb-grid button { padding: 12px 8px; font-size: 14px; border-radius: 12px; } .efb-grid button.on { background: rgba(76,194,255,.2); border-color: var(--accent); }
 .efb-grid button:disabled { opacity: .4; }
 .efb-opt { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.r-add4 { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1fr) minmax(0, 1.3fr) auto; }
+.fl-row button { font-size: 11px; }

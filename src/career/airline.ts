@@ -6,22 +6,61 @@ import { AIRCRAFT, getAircraft } from '../sim/aircraftDb.ts';
 import type { Airport, AirportDB } from '../world/airports.ts';
 import { distance } from '../core/geo.ts';
 
-export interface Plane { id: string; type: string; reg: string; owned: boolean; base: string; hours: number; condition: number }
+export interface Plane {
+  id: string; type: string; reg: string; owned: boolean; base: string; hours: number; condition: number;
+  /** Owned aircraft leased out to another airline: daily income, not available for routes. */
+  leasedOut?: { perDay: number; since: number };
+}
+/** A maintenance base: aircraft flying through it are looked after every day and cheaper to fix. */
+export interface Hangar { icao: string; since: number }
 export interface Route { id: string; from: string; to: string; planeId: string; perDay: number; fare: number }
 export interface DayLine { route: string; flights: number; pax: number; seats: number; revenue: number; cost: number }
 export interface DayReport { day: number; lines: DayLine[]; revenue: number; cost: number; leases: number; profit: number; events: string[] }
 export interface Airline {
   name: string; code: string; hub: string; cash: number; day: number; rep: number;
+  /** All hubs (the first is the main hub); routes start at any of them. */
+  hubs?: string[];
+  hangars?: Hangar[];
   fleet: Plane[]; routes: Route[]; last: DayReport | null; history: { day: number; cash: number }[];
   flightNo: number;
 }
 
 const KEY = 'sky.airline';
-export const loadAirline = (): Airline | null => { try { const s = localStorage.getItem(KEY); return s ? JSON.parse(s) as Airline : null; } catch { return null; } };
+export const loadAirline = (): Airline | null => {
+  try {
+    const s = localStorage.getItem(KEY);
+    if (!s) return null;
+    const a = JSON.parse(s) as Airline;
+    a.hubs ??= [a.hub];          // saves from before multiple hubs
+    a.hangars ??= [];
+    return a;
+  } catch { return null; }
+};
 export const saveAirline = (a: Airline | null) => { try { if (a) localStorage.setItem(KEY, JSON.stringify(a)); else localStorage.removeItem(KEY); } catch { /* ignore */ } };
 
 export function newAirline(name: string, code: string, hub: string): Airline {
-  return { name, code: code.toUpperCase().slice(0, 3), hub, cash: 60_000_000, day: 1, rep: 50, fleet: [], routes: [], last: null, history: [], flightNo: 100 };
+  return { name, code: code.toUpperCase().slice(0, 3), hub, hubs: [hub], hangars: [], cash: 60_000_000, day: 1, rep: 50, fleet: [], routes: [], last: null, history: [], flightNo: 100 };
+}
+
+// ---- hubs, hangars and the aircraft market for owned planes ----
+/** Opening a hub (gates, lounges, ground handling contracts) and its daily cost, by airport size. */
+export const hubCost = (apt: Airport) => ({ open: apt.size === 3 ? 18_000_000 : apt.size === 2 ? 6_000_000 : 1_500_000, perDay: apt.size === 3 ? 6000 : apt.size === 2 ? 2500 : 700 });
+/** Building a hangar anywhere, and its daily upkeep. */
+export const hangarCost = (apt: Airport) => ({ build: apt.size === 3 ? 25_000_000 : apt.size === 2 ? 14_000_000 : 6_000_000, perDay: 4000 });
+/** What a buyer pays for an owned aircraft: list price, less age (hours) and wear. */
+export function resaleValue(p: Plane) {
+  const m = market().find(x => x.def.id === p.type);
+  if (!m) return 0;
+  return Math.round(m.price * Math.max(0.25, 0.78 - p.hours / 60000) * (0.55 + 0.45 * p.condition / 100) / 1e4) * 1e4;
+}
+/** Daily rent another airline pays for one of ours (wet-lease rates are a bit under the market lease). */
+export const leaseOutRate = (p: Plane) => Math.round((market().find(x => x.def.id === p.type)?.leasePerDay ?? 0) * 0.8 / 100) * 100;
+/** Ending a lease early: a month's rent as the termination fee. */
+export const returnFee = (p: Plane) => (market().find(x => x.def.id === p.type)?.leasePerDay ?? 0) * 30;
+/** Does a hangar look after this aircraft (it flies to or from a hangar airport)? */
+export function servedByHangar(al: Airline, p: Plane) {
+  const at = new Set((al.hangars ?? []).map(h => h.icao));
+  return al.routes.some(r => r.planeId === p.id && (at.has(r.from) || at.has(r.to))) || at.has(p.base);
 }
 
 /** Aircraft that make sense for an airline (passenger types), with a list price in USD. */
@@ -74,7 +113,7 @@ export function flightEconomics(al: Airline, r: Route, db: AirportDB, competitio
   const fuel = fuelKgPerH * bh * 0.85;                       // USD at ~0.85 $/kg
   const crew = bh * (def.cat === 'widebody' ? 3200 : def.cat === 'airliner' ? 1800 : 900);
   const fees = (b.size === 3 ? 3500 : b.size === 2 ? 1300 : 250) * Math.min(2.5, Math.max(0.3, seats / 150)) + pax * 6;
-  const maint = bh * seats * 4.5 * (1.3 - p.condition / 330);
+  const maint = bh * seats * 4.5 * (1.3 - p.condition / 330) * (servedByHangar(al, p) ? 0.7 : 1);
   return { pax, seats, revenue: pax * r.fare, cost: Math.round(fuel + crew + fees + maint), hours: bh };
 }
 
@@ -83,7 +122,7 @@ export function runDay(al: Airline, db: AirportDB): DayReport {
   const lines: DayLine[] = [], events: string[] = [];
   for (const r of al.routes) {
     const p = al.fleet.find(x => x.id === r.planeId);
-    if (!p || !db.get(r.from) || !db.get(r.to)) continue;
+    if (!p || p.leasedOut || !db.get(r.from) || !db.get(r.to)) continue;
     let flights = r.perDay * 2;  // there and back
     if (p.condition < 45 && Math.random() < 0.25) { flights = Math.max(0, flights - 2); events.push(`${p.reg} 정비 문제로 ${r.from}–${r.to} 2편 결항`); al.rep = Math.max(0, al.rep - 2); }
     let pax = 0, seats = 0, revenue = 0, cost = 0;
@@ -95,7 +134,14 @@ export function runDay(al: Airline, db: AirportDB): DayReport {
     lines.push({ route: `${r.from}–${r.to}`, flights, pax, seats, revenue, cost });
   }
   const leases = al.fleet.filter(p => !p.owned).reduce((s, p) => s + (market().find(m => m.def.id === p.type)?.leasePerDay ?? 0), 0);
-  const revenue = lines.reduce((s, l) => s + l.revenue, 0), cost = lines.reduce((s, l) => s + l.cost, 0) + al.fleet.length * 1500;
+  // aircraft we lease out to others pay us rent; hubs and hangars cost upkeep; hangars look after their aircraft
+  const rentIn = al.fleet.reduce((s, p) => s + (p.leasedOut?.perDay ?? 0), 0);
+  const hubFees = (al.hubs ?? [al.hub]).reduce((s, h) => { const a = db.get(h); return s + (a ? hubCost(a).perDay : 0); }, 0);
+  const hangarFees = (al.hangars ?? []).reduce((s, h) => { const a = db.get(h.icao); return s + (a ? hangarCost(a).perDay : 0); }, 0);
+  for (const p of al.fleet) if (servedByHangar(al, p)) p.condition = Math.min(100, p.condition + 3);
+  if (rentIn) events.push(`임대 수입 +$${rentIn.toLocaleString()}`);
+  const revenue = lines.reduce((s, l) => s + l.revenue, 0) + rentIn;
+  const cost = lines.reduce((s, l) => s + l.cost, 0) + al.fleet.filter(p => !p.leasedOut).length * 1500 + hubFees + hangarFees;
   const profit = revenue - cost - leases;
   // reputation follows how full and how cheap the flights are
   const lf = lines.reduce((s, l) => s + l.pax, 0) / Math.max(1, lines.reduce((s, l) => s + l.seats, 0));
