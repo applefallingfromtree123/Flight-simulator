@@ -10,6 +10,7 @@ import { liveriesFor, getLivery } from '../world/liveries.ts';
 import { FG_PREFIX, fgLivery, fgModelFor } from '../world/fgModels.ts';
 import { SPECS } from '../sim/specs.ts';
 import { ACTIVITIES, loadBest, type Activity } from '../career/activities.ts';
+import { liveWeatherCached, reportLine } from '../sim/liveWeather.ts';
 import { CLASS_LABEL, LICENCES, allowed, classOf, eligibleAircraft, generateJobs, jobTitle, licenceOf, loadCareer, newCareer, nextLicence, payloadPct, saveCareer, type CareerState, type Job } from '../career/career.ts';
 
 export interface FlightConfig {
@@ -33,15 +34,20 @@ export interface Settings {
 
 const DEF_CFG: FlightConfig = {
   aircraftId: 'a320neo', livery: {}, dep: 'RKSI', depRwy: '', start: 'runway', arr: 'RJTT', arrRwy: '', route: '',
-  cruiseFt: 35000, fuelPct: 60, payloadPct: 70, time: 'now', weather: 'clear', windDir: null, windSpd: null, visibility: null,
+  cruiseFt: 35000, fuelPct: 60, payloadPct: 70, time: 'now', weather: 'live', windDir: null, windSpd: null, visibility: null,
 };
 const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'medium', shadows: false, volume: 0.7, autoMixture: true, deck3d: true };
 
+/** Live weather became the default (like MSFS): switch saved plans over once; a preset picked later is kept. */
+function liveByDefault(c: FlightConfig): FlightConfig {
+  try { if (!localStorage.getItem('sky.wxLive')) { c.weather = 'live'; localStorage.setItem('sky.wxLive', '1'); } } catch { /* ignore */ }
+  return c;
+}
 function load<T>(k: string, d: T): T { try { const s = localStorage.getItem(k); return s ? { ...d, ...JSON.parse(s) } : { ...d }; } catch { return { ...d }; } }
 function save(k: string, v: unknown) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* ignore */ } }
 
 export class Menu {
-  cfg: FlightConfig = load('sky.cfg', DEF_CFG);
+  cfg: FlightConfig = liveByDefault(load('sky.cfg', DEF_CFG));
   settings: Settings = load('sky.settings', DEF_SET);
   onFly: (c: FlightConfig) => void = () => {};
   onPreview: (apt: Airport) => void = () => {};
@@ -280,7 +286,7 @@ export class Menu {
   }
 
   private aptField(id: string, label: string, value: string) {
-    return `<div class="field sugg"><label>${label}</label><input id="${id}" value="${value}" placeholder="ICAO / IATA / 도시" autocomplete="off"><div class="list hidden"></div><div class="apt-info" id="${id}Info"></div></div>`;
+    return `<div class="field sugg"><label>${label}</label><input id="${id}" value="${value}" placeholder="ICAO / IATA / 도시" autocomplete="off"><div class="list hidden"></div><div class="apt-info" id="${id}Info"></div><div class="wx-line" id="${id}Wx"></div></div>`;
   }
 
   private renderPlan(el: HTMLElement) {
@@ -335,6 +341,12 @@ export class Menu {
     const info = (id: string, icao: string) => {
       const apt = this.db.get(icao);
       $(id + 'Info').textContent = apt ? `${apt.name} · ${apt.city} ${apt.country} · 표고 ${Math.round(apt.elev / 0.3048)} ft` : icao ? '공항을 찾을 수 없음' : '';
+      // current real weather at the airport
+      const wxEl = $(id + 'Wx');
+      wxEl.textContent = apt ? '실시간 기상 확인 중…' : '';
+      if (apt) liveWeatherCached(apt.lat, apt.lon)
+        .then(lw => { if (this.db.get(c[id as 'dep' | 'arr'])?.icao === apt.icao) wxEl.textContent = `지금 ${apt.icao}: ${reportLine(lw.report)}`; })
+        .catch(() => { wxEl.textContent = '실시간 기상을 받을 수 없음 (오프라인?)'; });
     };
     const updRoute = () => {
       const dep = this.db.get(c.dep), arr = this.db.get(c.arr);

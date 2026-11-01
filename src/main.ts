@@ -7,7 +7,7 @@ import { FCS, type Waypoint } from './sim/fcs.ts';
 import { Systems } from './sim/systems.ts';
 import { getAircraft } from './sim/aircraftDb.ts';
 import { WEATHER_PRESETS, atmosphere, casToTas, inCloud, turbulenceAt, type WeatherState } from './sim/atmosphere.ts';
-import { fetchLiveWeather } from './sim/liveWeather.ts';
+import { fetchLiveWeather, reportLine, type WxReport } from './sim/liveWeather.ts';
 import { maxThrust } from './sim/engines.ts';
 import { AirportDB, lineUp, makeApproach, runwayEnds, type Airport } from './world/airports.ts';
 import { World, type ViewMode } from './world/scene.ts';
@@ -66,7 +66,30 @@ class App {
   careerJob: Job | null = null;
   activity: Activity | null = null;
   /** Live weather in use: where/when it was fetched (refreshed as the flight moves on). */
-  private liveWx: { at: { lat: number; lon: number; time: number }; summary: string; busy?: boolean } | null = null;
+  private liveWx: { at: { lat: number; lon: number; time: number }; summary: string; report?: WxReport; busy?: boolean } | null = null;
+  private wxWinT = 0;
+  /** Weather window: conditions where the aircraft is and the turbulence by altitude, with the aircraft marked. */
+  private updateWxWin() {
+    const win = $('wxwin');
+    if (win.classList.contains('hidden') || !this.ac || performance.now() - this.wxWinT < 1500) return;
+    this.wxWinT = performance.now();
+    const ac = this.ac, w = this.weather, ground = ac.alt - ac.agl;
+    const wind = Math.hypot(ac.wind?.[0] ?? 0, ac.wind?.[1] ?? 0) / KT;
+    const here = turbulenceAt(w, ac.alt, ac.agl);
+    const word = (t: number) => (t > 0.6 ? '심함' : t > 0.35 ? '보통' : t > 0.12 ? '약함' : '없음');
+    const rows: string[] = [];
+    for (let fl = 440; fl >= 0; fl -= 20) {
+      const h = fl * 100 * FT;
+      const t = turbulenceAt(w, h, Math.max(0, h - ground));
+      const me = Math.abs(ac.alt / FT / 100 - fl) < 10;
+      rows.push(`<div class="tb-row${me ? ' me' : ''}"><span>FL${String(fl).padStart(3, '0')}</span><i style="width:${Math.round(t * 100)}%;background:${t > 0.6 ? '#ff4d4d' : t > 0.35 ? '#ffb020' : t > 0.12 ? '#ffe14d' : '#3ee07a'}"></i><b>${me ? '◀ 현재' : ''}</b></div>`);
+    }
+    win.querySelector('.win-body')!.innerHTML = `
+      <div class="wx-now"><b>현재 위치</b> 바람 ${Math.round(wind)}kt · 난기류 <b>${word(here)}</b> · 외기 ${Math.round(ac.air.T - 273.15)}°C</div>
+      ${this.liveWx?.report ? `<div class="wx-line">${reportLine(this.liveWx.report)}</div><div class="dim" style="font-size:11px">Open-Meteo 실시간 · ${Math.round((Date.now() - this.liveWx.at.time) / 60000)}분 전 갱신</div>`
+        : `<div class="dim" style="font-size:11px">${this.cfg?.weather === 'live' ? '실시간 기상을 받지 못했습니다 (기본 날씨 사용)' : '기상 프리셋 사용 중 — 비행 계획에서 "실시간 기상"을 고르면 실제 날씨'}</div>`}
+      <div class="tb-chart">${rows.join('')}</div>`;
+  }
   private turbShown = 0;
   private async fetchWeather(lat: number, lon: number) {
     const ctl = new AbortController();
@@ -84,7 +107,7 @@ class App {
           // clouds come back above ground: put them over the terrain under the aircraft
           for (const c of n.w.clouds) { c.base += ac.groundH; c.top += ac.groundH; }
           Object.assign(this.weather, n.w);
-          this.liveWx = { at: n.at, summary: n.summary };
+          this.liveWx = { at: n.at, summary: n.summary, report: n.report };
           toast(n.summary);
         }).catch(() => { lw.at = { lat: ac.lat, lon: ac.lon, time: Date.now() }; lw.busy = false; });
       }
@@ -190,7 +213,7 @@ class App {
       try {
         const lw = await this.fetchWeather(depApt.lat, depApt.lon);
         w = lw.w;
-        this.liveWx = { at: lw.at, summary: lw.summary };
+        this.liveWx = { at: lw.at, summary: lw.summary, report: lw.report };
       } catch (e) {
         w = JSON.parse(JSON.stringify(WEATHER_PRESETS.few.w));
         toast(`실시간 기상을 받지 못해 기본 날씨로 시작합니다 (${(e as Error).message})`);
@@ -501,6 +524,7 @@ class App {
     $('btnOverhead').onclick = () => this.action('overhead');
     $('btnChecklist').onclick = () => this.action('checklist');
     $('btnMap').onclick = () => this.action('map');
+    $('btnWx').onclick = () => { $('wxwin').classList.toggle('hidden'); this.wxWinT = 0; this.updateWxWin(); };
     $('btnFms').onclick = () => this.action('fms');
     $('btnMenu').onclick = () => this.openMenu();
     $('btnDiag').onclick = () => this.toggleDiag();
@@ -615,6 +639,7 @@ class App {
       }
       if (this.careerJob) this.trackJob(dtReal * rate);
       this.updateLiveWeather();
+      this.updateWxWin();
       if (this.activity?.type === 'landing') this.trackLanding(dtReal * rate);
       if (ac.crash) {
         if (this.careerJob && !this.job.done) this.completeJob(true);

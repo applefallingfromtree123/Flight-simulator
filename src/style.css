@@ -292,3 +292,10 @@ body.idle #topbar:hover { opacity: 1; }
 #touch { top: 56px; }
 #menu .m-col.right #fly { position: sticky; bottom: 0; z-index: 3; margin-top: 4px; }
 #menu .m-col.right { padding-bottom: 0; }
+.wx-line { font-size: 11px; color: #9fe0ff; margin-top: 3px; line-height: 1.45; }
+#wxwin { top: 60px; right: 20px; width: 380px; }
+.wx-now { font-size: 13px; margin-bottom: 4px; }
+.tb-chart { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.tb-row { display: grid; grid-template-columns: 52px 1fr 56px; align-items: center; gap: 6px; font: 11px "B612 Mono", monospace; color: var(--dim); }
+.tb-row i { display: block; height: 8px; border-radius: 4px; min-width: 2px; }
+.tb-row.me { color: #fff; } .tb-row.me b { color: var(--accent); }

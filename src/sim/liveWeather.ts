@@ -6,14 +6,49 @@ import type { CloudLayer, TurbLayer, WeatherState, WindLevel } from './atmospher
 
 const LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200] as const;
 
+/** Observed conditions for display (METAR-like). */
+export interface WxReport {
+  temp: number; dew: number; qnh: number; windDir: number; wind: number; gust: number; vis: number; code: number;
+  low: number; mid: number; high: number; cape: number; jet: { spd: number; dir: number; fl: number } | null;
+}
 export interface LiveWeather {
   w: WeatherState;
+  report: WxReport;
   /** Short description for the pilot ("보통 난기류 FL280–FL340 (제트기류 윈드시어)"). */
   summary: string;
   at: { lat: number; lon: number; time: number };
 }
 
 const FT = 0.3048;
+
+/** WMO weather code in Korean. */
+export function weatherText(code: number) {
+  if (code >= 95) return '뇌우';
+  if (code >= 85) return '소낙눈';
+  if (code >= 80) return '소나기';
+  if (code >= 71) return code >= 75 ? '많은 눈' : '눈';
+  if (code >= 61) return code >= 65 ? '강한 비' : code >= 63 ? '비' : '약한 비';
+  if (code >= 51) return '이슬비';
+  if (code >= 45) return '안개';
+  if (code >= 3) return '흐림';
+  if (code >= 2) return '구름 조금';
+  if (code >= 1) return '대체로 맑음';
+  return '맑음';
+}
+
+const cache = new Map<string, { t: number; p: Promise<LiveWeather> }>();
+/** Cached for 10 minutes per ~10 km cell (the menu asks for the same airports repeatedly). */
+export function liveWeatherCached(lat: number, lon: number): Promise<LiveWeather> {
+  const k = `${lat.toFixed(1)},${lon.toFixed(1)}`;
+  const hit = cache.get(k);
+  if (hit && Date.now() - hit.t < 10 * 60_000) return hit.p;
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  const p = fetchLiveWeather(lat, lon, ctl.signal).finally(() => clearTimeout(timer));
+  p.catch(() => cache.delete(k));
+  cache.set(k, { t: Date.now(), p });
+  return p;
+}
 
 export async function fetchLiveWeather(lat: number, lon: number, signal?: AbortSignal): Promise<LiveWeather> {
   const cur = ['temperature_2m', 'dew_point_2m', 'pressure_msl', 'wind_speed_10m', 'wind_direction_10m', 'wind_gusts_10m',
@@ -81,7 +116,22 @@ export async function fetchLiveWeather(lat: number, lon: number, signal?: AbortS
   const cat = turb.filter(x => !x.agl && x.intensity > 0.2);
   const where = cat.length ? ` FL${Math.round(Math.min(...cat.map(x => x.base)) / FT / 100)}–FL${Math.round(Math.max(...cat.map(x => x.top)) / FT / 100)}` : '';
   const summary = `실시간 기상: 바람 ${Math.round(w.windDir)}°/${Math.round(wind)}kt${gust > wind + 5 ? ` 돌풍 ${Math.round(gust)}kt` : ''} · QNH ${Math.round(w.qnh)} · ${level}${where}${reasons.length ? ` (${[...new Set(reasons)].join(', ')})` : ''}`;
-  return { w, summary, at: { lat, lon, time: Date.now() } };
+  const jetLvl = winds.reduce<WindLevel | null>((m, x) => (!m || x.spd > m.spd ? x : m), null);
+  const report: WxReport = {
+    temp: t, dew: td, qnh: w.qnh, windDir: w.windDir, wind, gust, vis: w.visibility, code: wx,
+    low: c.cloud_cover_low ?? 0, mid: c.cloud_cover_mid ?? 0, high: c.cloud_cover_high ?? 0, cape,
+    jet: jetLvl && jetLvl.spd >= 60 ? { spd: jetLvl.spd, dir: jetLvl.dir, fl: Math.round(jetLvl.h / FT / 100) } : null,
+  };
+  return { w, report, summary, at: { lat, lon, time: Date.now() } };
+}
+
+/** One-line report: "138°/12kt 시정 4.7km 이슬비 · 10.9°C/8.2 · QNH 1020 · 구름 하 24% 중 46% 상 97% · 제트 266°/110kt FL340" */
+export function reportLine(r: WxReport) {
+  const vis = r.vis >= 10000 ? '10km+' : `${(r.vis / 1000).toFixed(1)}km`;
+  return `${String(Math.round(r.windDir)).padStart(3, '0')}°/${Math.round(r.wind)}kt${r.gust > r.wind + 5 ? ` G${Math.round(r.gust)}` : ''} · 시정 ${vis} · ${weatherText(r.code)}`
+    + ` · ${r.temp.toFixed(0)}°C/${r.dew.toFixed(0)} · QNH ${Math.round(r.qnh)}`
+    + ` · 구름 하${Math.round(r.low)}% 중${Math.round(r.mid)}% 상${Math.round(r.high)}%`
+    + (r.jet ? ` · 제트기류 ${Math.round(r.jet.dir)}°/${Math.round(r.jet.spd)}kt FL${r.jet.fl}` : '');
 }
 
 function vecDiff(a: WindLevel, b: WindLevel) {

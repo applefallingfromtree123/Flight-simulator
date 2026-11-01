@@ -16,13 +16,29 @@ const SEG: Record<string, string> = {
 
 export class RunwayRenderer {
   private prim: Cesium.Primitive | null = null;
+  private draped: Cesium.GroundPrimitive[] = [];
   private builtAt: { lat: number; lon: number } | null = null;
+  private rws: Runway[] = [];
   offset = 0; // geoid offset (photoreal tiles)
-  /** Hidden over photorealistic 3D tiles, which already contain the real runway. */
   show = true;
+  /**
+   * Over photorealistic 3D tiles the photographed runway is blurry: our own crisp surface and markings are draped
+   * onto the tiles instead (ground primitives classify the tile surface, so nothing floats or sinks).
+   */
+  private drape = false;
+  private drapeReady = false;
   get primitive() { return this.prim; }
 
-  constructor(private scene: Cesium.Scene, private db: AirportDB) {}
+  constructor(private scene: Cesium.Scene, private db: AirportDB) {
+    Cesium.GroundPrimitive.initializeTerrainHeights().then(() => { this.drapeReady = true; if (this.drape) this.rebuild(); }).catch(() => {});
+  }
+
+  setDrape(on: boolean) {
+    if (on === this.drape) return;
+    this.drape = on;
+    this.rebuild();
+  }
+  private rebuild() { if (this.rws.length) this.build(this.rws); }
 
   update(lat: number, lon: number, force = false) {
     if (!this.db.ready) return;
@@ -30,13 +46,21 @@ export class RunwayRenderer {
     this.builtAt = { lat, lon };
     const rws: Runway[] = [];
     for (const { apt } of this.db.nearest({ lat, lon }, 12, 45000)) for (const rw of apt.runways) if (rw.hard) rws.push(rw);
+    this.rws = rws;
     this.build(rws);
   }
 
+  private clear() {
+    if (this.prim) { this.scene.primitives.remove(this.prim); this.prim = null; }
+    for (const g of this.draped) this.scene.groundPrimitives.remove(g);
+    this.draped = [];
+  }
+
   private build(rws: Runway[]) {
+    this.clear();
+    if (this.drape) { if (this.drapeReady) this.buildDraped(rws); return; }
     const asphalt: number[] = [], paint: number[] = [];
     for (const rw of rws) this.runway(rw, asphalt, paint);
-    if (this.prim) { this.scene.primitives.remove(this.prim); this.prim = null; }
     const instances: Cesium.GeometryInstance[] = [];
     const mk = (pos: number[], color: string, id: string) => {
       if (!pos.length) return;
@@ -73,8 +97,30 @@ export class RunwayRenderer {
     }));
   }
 
-  /** Emit triangles for one runway. */
-  private runway(rw: Runway, asphalt: number[], paint: number[]) {
+  /** Draped version: one polygon per quad, asphalt first so the paint classifies on top of it. */
+  private buildDraped(rws: Runway[]) {
+    const asphalt: Cesium.Cartesian3[][] = [], paint: Cesium.Cartesian3[][] = [];
+    for (const rw of rws) this.runway(rw, [], [], asphalt, paint);
+    const add = (quads: Cesium.Cartesian3[][], color: string) => {
+      if (!quads.length) return;
+      const c = Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(color));
+      const g = new Cesium.GroundPrimitive({
+        geometryInstances: quads.map(q => new Cesium.GeometryInstance({
+          geometry: new Cesium.PolygonGeometry({ polygonHierarchy: new Cesium.PolygonHierarchy(q), granularity: Cesium.Math.RADIANS_PER_DEGREE / 200 }),
+          attributes: { color: c },
+        })),
+        appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: false }),
+        classificationType: Cesium.ClassificationType.BOTH,
+        asynchronous: false, allowPicking: false,
+      });
+      this.draped.push(this.scene.groundPrimitives.add(g));
+    };
+    add(asphalt, '#2f3235');
+    add(paint, '#f2f3ee');
+  }
+
+  /** Emit triangles (or, when draping, quads) for one runway. */
+  private runway(rw: Runway, asphalt: number[], paint: number[], aQuads?: Cesium.Cartesian3[][], pQuads?: Cesium.Cartesian3[][]) {
     const a = rw.le, b = rw.he;
     const L = distance(a, b);
     if (L < 200) return;
@@ -91,6 +137,7 @@ export class RunwayRenderer {
     };
     const push = (out: number[], q: Quad, dz: number) => {
       const p = q.map(([x, y]) => toWorld(x, y, dz));
+      if (aQuads && pQuads) { (out === asphalt ? aQuads : pQuads).push(p); return; }
       for (const i of [0, 1, 2, 0, 2, 3]) out.push(p[i].x, p[i].y, p[i].z);
     };
     const rect = (out: number[], x0: number, x1: number, y0: number, y1: number, dz: number) => {

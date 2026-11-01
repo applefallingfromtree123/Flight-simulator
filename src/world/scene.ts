@@ -673,8 +673,7 @@ export class World {
   updateAirportLights(ac: Aircraft, night: number, eye: { lat: number; lon: number; alt: number }) {
     this.refineGeoid(ac);
     this.runways.offset = this.geoidOffset;
-    this.runways.show = !(this.tileset && this.tileset.show);
-    if (this.runways.primitive) this.runways.primitive.show = this.runways.show;
+    this.runways.setDrape(!!(this.tileset && this.tileset.show));
     this.runways.update(ac.lat, ac.lon);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {
