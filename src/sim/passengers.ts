@@ -3,7 +3,7 @@
 import type { Aircraft } from './fdm.ts';
 import { FT, KT, RAD } from '../core/math.ts';
 
-export type PaxPhase = 'boarding' | 'boarded' | 'taxi' | 'flight' | 'landed' | 'deboarded';
+export type PaxPhase = 'boarding' | 'boarded' | 'taxi' | 'flight' | 'landed' | 'deboarding' | 'deboarded';
 
 export class Passengers {
   boarded = 0;
@@ -29,6 +29,13 @@ export class Passengers {
     this.say(text);
   }
 
+  /** Parked at the destination: doors open and the passengers leave (a bit quicker than boarding). */
+  startDeboard() {
+    if (this.phase !== 'landed') return;
+    this.phase = 'deboarding';
+    this.announce('deboard', '좌석벨트 표시등이 꺼졌습니다. 앞쪽 출입문부터 내리시겠습니다. 이용해 주셔서 감사합니다.');
+  }
+
   /** Boarding takes about a minute for a full airliner (sped up). */
   get boardingDone() { return this.boarded >= this.count; }
 
@@ -42,6 +49,12 @@ export class Passengers {
       }
       return;
     }
+    if (this.phase === 'deboarding') {
+      this.boarded = Math.max(0, this.boarded - dt * Math.max(4, this.count / 45));
+      if (this.boarded <= 0) { this.phase = 'deboarded'; this.announce('deboarded', `승객 ${this.count}명이 모두 내렸습니다.`); }
+      return;
+    }
+    if (this.phase === 'deboarded') return;
     const gs = ac.gs / KT;
     if (ac.onGround && !this.wasAirborne) {
       if (gs > 3 && this.phase === 'boarded') { this.phase = 'taxi'; this.announce('taxi', '승무원 여러분, 이륙 준비해 주십시오.'); }

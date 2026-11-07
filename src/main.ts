@@ -136,7 +136,8 @@ class App {
     }, this.ac!);
     this.atc.muted = this.menu.settings.volume === 0;
     this.atc.onChange = () => this.renderAtc();
-    Promise.all([airportLayout(dep), arr ? airportLayout(arr) : Promise.resolve(null)]).then(([d, a]) => this.atc?.setLayout(d, a)).catch(() => {});
+    this.arrApt = arr ?? null; this.arrLayout = null;
+    Promise.all([airportLayout(dep), arr ? airportLayout(arr) : Promise.resolve(null)]).then(([d, a]) => { this.atc?.setLayout(d, a); this.arrLayout = a; }).catch(() => {});
     $('atcwin').classList.remove('hidden');
     this.renderAtc();
     if (atGate) toast(`게이트 ${cfg.gate?.ref ?? ''}: 승객 탑승 중 · 무전으로 IFR 허가 → 푸시백 → 택시 (Ctrl+E 자동 시동)`);
@@ -161,6 +162,25 @@ class App {
     }
     void this.ground.connect(k, ac, anchor);
   }
+  /**
+   * Parked at the destination (stopped, parking brake set or engines off): open the doors — a jet bridge at a
+   * contact gate (from the terminal's own bridge), airstairs and the apron bus elsewhere — and let the passengers off.
+   */
+  private checkArrivalParking() {
+    const ac = this.ac, pax = this.pax, arr = this.arrApt;
+    if (!ac || !pax || !arr || pax.phase !== 'landed' || !ac.onGround || ac.gs > 0.5 * KT) return;
+    if (!ac.parkingBrake && ac.engines.some(e => e.running)) return;
+    if (distance(ac, arr) > 6000) return;
+    const stands = this.arrLayout?.stands ?? [];
+    const near = stands.map(s => ({ s, d: distance(ac, s) })).sort((a, b) => a.d - b.d)[0];
+    const atStand = near && near.d < 60 ? near.s : null;
+    const big = ac.def.cat === 'airliner' || ac.def.cat === 'widebody';
+    if ((ac.def.seats ?? 0) > 6) this.connectGround(big && atStand && atStand.kind !== 'remote' && this.world.scenery.jetwayFor(ac) ? 'jetway' : 'stairs');
+    pax.startDeboard();
+    toast(atStand ? `${atStand.ref}번 ${atStand.kind === 'remote' ? '주기장' : '게이트'} 도착 — 승객 하기 시작` : '도착 — 승객 하기 시작');
+  }
+  private arrApt: { lat: number; lon: number } | null = null;
+  private arrLayout: { stands: { ref: string; lat: number; lon: number; kind: string }[] } | null = null;
   startPushback() {
     if (!this.ac || this.push.done) return;
     if (this.ground.kind !== 'none') { this.ground.disconnect(); this.world.scenery.hideJetway(null); toast('탑승교·계단차 분리'); }
@@ -860,12 +880,14 @@ class App {
         this.atc.update();
         this.atcT -= dtReal;
         if (this.atcT <= 0) { this.atcT = 1; if (!$('atcwin').classList.contains('hidden')) this.renderAtc(); }
-        if (this.atc.phase === 'done' && this.cfg?.airlineRoute) this.finishAirline();
+        if (this.atc.phase === 'done' && this.cfg?.airlineRoute && (!this.pax || this.pax.phase === 'deboarded')) this.finishAirline();
       }
-      this.ground.update(ac, this.world.acMatrix, dtReal * rate, !!this.pax && this.pax.phase === 'boarding' && this.ground.kind === 'stairs');
+      this.checkArrivalParking();
+      const walk = !this.pax || this.ground.kind !== 'stairs' ? null : this.pax.phase === 'boarding' ? 'in' : this.pax.phase === 'deboarding' ? 'out' : null;
+      this.ground.update(ac, this.world.acMatrix, dtReal * rate, walk);
       this.world.updateGuide(ac, f.plan.wps, f.plan.active, this.cfg?.cruiseFt ?? 35000, f.plan.approach, this.atc?.taxiGuide() ?? null);
       this.efb.tick(dtReal);
-      if (this.pax) { $('paxChip').classList.remove('hidden'); $('paxChip').textContent = this.pax.phase === 'boarding' ? `탑승 중 ${Math.floor(this.pax.boarded)}/${this.pax.count}명` : `승객 ${this.pax.count}명 · 만족도 ${this.pax.label}`; }
+      if (this.pax) { $('paxChip').classList.remove('hidden'); $('paxChip').textContent = this.pax.phase === 'boarding' ? `탑승 중 ${Math.floor(this.pax.boarded)}/${this.pax.count}명` : this.pax.phase === 'deboarding' ? `하기 중 · 기내 ${Math.ceil(this.pax.boarded)}명 남음` : this.pax.phase === 'deboarded' ? `승객 ${this.pax.count}명 하기 완료 · 만족도 ${this.pax.label}` : `승객 ${this.pax.count}명 · 만족도 ${this.pax.label}`; }
       else $('paxChip').classList.add('hidden');
       this.updateWxWin();
       if (this.activity?.type === 'landing') this.trackLanding(dtReal * rate);
@@ -911,7 +933,10 @@ class App {
     const cloud = inCloud(this.weather, eyeAlt);
     $('cloudfx').style.opacity = String(cloud * 0.93);
     const topCloud = Math.max(0, ...this.weather.clouds.map(x => x.top));
-    $('rainfx').style.opacity = String(this.weather.precip && eyeAlt < topCloud ? 0.25 + 0.2 * this.weather.precip : 0);
+    // animated rain / snow (shader) on medium+; the old CSS streaks only on low quality
+    const precipOn = !!this.weather.precip && eyeAlt < topCloud;
+    $('rainfx').style.opacity = String(precipOn && w.qualityTier < 1 ? 0.25 + 0.2 * this.weather.precip : 0);
+    w.effects.update(ac, w.acMatrix, { precipLevel: this.weather.precip, belowTops: eyeAlt < topCloud, cockpit: w.view === 'cockpit' || w.view === 'cockpit-hud', tier: w.qualityTier, night, inCloud: cloud, dt: dtReal });
     const g = ac.nz;
     $('blackout').style.opacity = String(clamp((g - 6.5) / 3, 0, 0.9) + clamp((-g - 2.5) / 2, 0, 0.6));
     document.documentElement.style.setProperty('--panelBright', String(1 - night * 0.3));

@@ -70,6 +70,15 @@ export class GroundServices {
       for (const s of [-1, 1]) for (const t of [0.15, 0.95]) cyl(rubber, [x + s * 1.1, y0 - run * t, ground - 0.4], [x + s * 1.3, y0 - run * t, ground - 0.4], 0.4, 0.4, 12);
       // where the walkers go: from the terminal side across the apron, up the stairs, in at the door
       this.path = [[x - 6, y0 - run - 30, ground], [x - 2, y0 - run - 8, ground], [x, y0 - run - 0.5, ground], [x, y0, sill], [x, y + 0.5, sill]];
+      // apron bus waiting where the walkway starts
+      const bus = new Part('#e9ecef', 0.3, 0.45), stripe = new Part('#1f6fd1', 0.2, 0.5), win = new Part('#1b2630', 0.5, 0.15);
+      const bx = x - 6, by = y0 - run - 33.5;
+      box(bus, [bx, by, ground - 1.65], [13, 2.6, 2.9]);
+      box(stripe, [bx, by + 1.31, ground - 0.9], [13, 0.04, 0.5]);
+      box(win, [bx, by + 1.31, ground - 2.15], [11.6, 0.05, 1.1]);
+      box(win, [bx, by - 1.31, ground - 2.15], [11.6, 0.05, 1.1]);
+      for (const sx of [-4.5, 4.5]) for (const sy of [-1.15, 1.15]) cyl(rubber, [bx + sx, by + sy - 0.15, ground - 0.5], [bx + sx, by + sy + 0.15, ground - 0.5], 0.5, 0.5, 12);
+      nodes.push({ name: 'bus', parts: [bus, stripe, win] });
     }
     nodes.push({ name: 'equip', parts: [metal, dark, glass, yellow, rubber] });
     const url = URL.createObjectURL(new Blob([writeGlb(nodes)], { type: 'model/gltf-binary' }));
@@ -106,7 +115,8 @@ export class GroundServices {
   }
 
   /** Follow the parked aircraft (ground fit can still settle) and walk the boarding passengers. */
-  update(ac: Aircraft, aircraftMatrix: Cesium.Matrix4, dt: number, boarding: boolean) {
+  update(ac: Aircraft, aircraftMatrix: Cesium.Matrix4, dt: number, walk: 'in' | 'out' | null) {
+    const boarding = walk !== null;
     if (!this.model) return;
     Cesium.Matrix4.clone(aircraftMatrix, this.model.modelMatrix);
     const pm = this.people;
@@ -121,7 +131,8 @@ export class GroundServices {
     for (let i = 0; i < WALKERS; i++) {
       const n = pm.getNode(`p${i}`);
       if (!n) continue;
-      const along = ((this.phase * speed + (i * total) / WALKERS) % total);
+      const run = (this.phase * speed + (i * total) / WALKERS) % total;
+      const along = walk === 'out' ? total - run : run;   // deplaning: from the door back to the bus / terminal
       let k = 0, d = along;
       while (k < seg.length - 1 && d > seg[k]) { d -= seg[k]; k++; }
       const a = this.path[k], b = this.path[k + 1], f = Math.min(1, d / (seg[k] || 1));
@@ -129,7 +140,7 @@ export class GroundServices {
       // walking bob; body frame -> glTF (x left, y up, z forward)
       const bob = Math.abs(Math.sin(this.phase * 6 + i)) * 0.04;
       n.matrix = Cesium.Matrix4.fromTranslation(new Cesium.Cartesian3(-p[1], -p[2] + bob, p[0]));
-      n.show = k < seg.length - 1 || f < 0.95;
+      n.show = walk === 'out' ? along > 1.5 : (k < seg.length - 1 || f < 0.95);
     }
     void ac;
   }

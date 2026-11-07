@@ -1,5 +1,6 @@
 // Airline management screen: found the airline, buy/lease aircraft, open routes, run days, fly a route.
 import type { AirportDB } from '../world/airports.ts';
+import { bindDepMode, depModeHtml, getDepMode } from './depMode.ts';
 import { getAircraft } from '../sim/aircraftDb.ts';
 import { distance } from '../core/geo.ts';
 import type { FlightConfig } from './menu.ts';
@@ -69,6 +70,7 @@ export function renderAirline(el: HTMLElement, db: AirportDB, fly: (c: Partial<F
       ${last ? `<div class="dim" style="font-size:12px">${last.day}일차 결과: 승객 ${last.lines.reduce((s, l) => s + l.pax, 0).toLocaleString()}명 · 매출 ${usd(last.revenue)} · 비용 ${usd(last.cost + last.leases)} · <b style="color:${last.profit >= 0 ? 'var(--ok)' : 'var(--err)'}">${usd(last.profit)}</b>
         ${last.events.map(e => `<br>⚠ ${e}`).join('')}</div>` : ''}
     </div>
+    <div class="sec">${depModeHtml()}</div>
     <div class="sec"><h3>노선</h3>${routesHtml}
       <div class="r-add r-add4"><select id="rFrom">${hubs.map(h => `<option value="${h}">${h} 출발</option>`).join('')}</select><input id="rTo" placeholder="도착 (ICAO)"><select id="rPlane">${al.fleet.filter(p => !p.leasedOut && !al.routes.some(r => r.planeId === p.id)).map(p => `<option value="${p.id}">${p.reg} ${getAircraft(p.type).name}</option>`).join('') || '<option value="">빈 기체 없음</option>'}</select>
       <button id="rAdd">노선 개설</button></div>
@@ -168,13 +170,14 @@ export function renderAirline(el: HTMLElement, db: AirportDB, fly: (c: Partial<F
     const v = prompt('편도 운임 (USD)', String(r.fare));
     if (v && +v > 0) { r.fare = Math.round(+v); save(); }
   });
+  bindDepMode(el);
   el.querySelectorAll<HTMLButtonElement>('[data-fly]').forEach(b => b.onclick = () => {
     const r = al.routes.find(x => x.id === b.dataset.fly)!, p = al.fleet.find(x => x.id === r.planeId)!;
     const e = flightEconomics(al, r, db);
     const def = getAircraft(p.type);
     al.flightNo = al.flightNo >= 999 ? 101 : al.flightNo + 1;
     saveAirline(al);
-    fly({ aircraftId: def.id, dep: r.from, arr: r.to, depRwy: '', arrRwy: '', route: '', start: 'gate', gate: undefined,
+    fly({ aircraftId: def.id, dep: r.from, arr: r.to, depRwy: '', arrRwy: '', route: '', start: getDepMode(), gate: undefined,
       payloadPct: Math.round(Math.min(100, e.pax * 95 / Math.max(1, def.m.pay) * 100)), fuelPct: 70 }, r.id, e.pax);
   });
 }

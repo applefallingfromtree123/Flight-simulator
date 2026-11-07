@@ -1,6 +1,7 @@
 // Main menu: aircraft selection, flight planner (departure / arrival / route / start position),
 // conditions (time, weather), scenery & control settings.
 import { AIRCRAFT, CATEGORY_LABEL, getAircraft } from '../sim/aircraftDb.ts';
+import { bindDepMode, depModeHtml, getDepMode } from './depMode.ts';
 import { WEATHER_PRESETS } from '../sim/atmosphere.ts';
 import { runwayEnds, type AirportDB, type Airport } from '../world/airports.ts';
 import { Controls, type AxisBind } from '../input/controls.ts';
@@ -500,6 +501,7 @@ export class Menu {
         <div class="dim">현재 위치: <b>${c.location}</b> ${here ? here.name : ''} · 조종 가능: ${lic.classes.map(k => CLASS_LABEL[k]).join(', ')}</div>
       </div>
       ${c.active ? `<div class="sec"><h3>진행 중인 임무</h3>${jobCard(c.active, true)}</div>` : ''}
+      <div class="sec">${depModeHtml()}</div>
       <div class="sec"><h3>의뢰 게시판 — ${c.location}</h3>
         ${c.jobs.length ? c.jobs.map(j => jobCard(j)).join('') : '<p class="note">이 공항 주변에 맞는 의뢰가 없습니다. 다른 공항으로 이동(자유 비행 후 착륙)하거나 홈 공항을 바꿔보세요.</p>'}
         <button id="cRefresh" style="width:100%">새 의뢰 받기</button>
@@ -509,6 +511,7 @@ export class Menu {
         ${c.log.slice(0, 15).map(e => `<tr class="${e.result}"><td>${new Date(e.t).toLocaleDateString()}</td><td>${e.from}→${e.to}</td><td>${e.ac}</td><td>${e.min}분</td><td>${e.fpm === null ? '—' : e.fpm + ' fpm'}</td><td>${e.pay >= 0 ? '' : '−'}$${Math.abs(e.pay).toLocaleString()}</td></tr>`).join('')}</table>` : '<p class="note">아직 기록이 없습니다.</p>'}
       </div>
       <button id="cReset" style="width:100%;opacity:.7">커리어 초기화</button>`;
+    bindDepMode(el);
     el.querySelector<HTMLButtonElement>('#cRefresh')!.onclick = () => { c.jobs = generateJobs(c, this.db, Date.now() + 1); c.jobsFor = c.location; saveCareer(c); this.renderCareer(el); };
     el.querySelector<HTMLButtonElement>('#cReset')!.onclick = () => { if (confirm('커리어 기록을 모두 지울까요?')) { this.career = null; saveCareer(null); this.renderCareer(el); } };
     el.querySelectorAll<HTMLButtonElement>('[data-accept]').forEach(b => b.onclick = () => {
@@ -531,7 +534,7 @@ export class Menu {
     const x = SPECS[a.id];
     const endurH = x && x.rangeKm ? x.rangeKm / 1.852 / Math.max(60, a.v.cruise) : rangeHours(a);
     const needH = job.nm * 1.15 / Math.max(60, a.v.cruise * 0.9) + 0.75;
-    Object.assign(this.cfg, { aircraftId: a.id, dep: job.from, arr: job.to, depRwy: '', arrRwy: '', route: '', start: 'runway',
+    Object.assign(this.cfg, { aircraftId: a.id, dep: job.from, arr: job.to, depRwy: '', arrRwy: '', route: '', start: getDepMode(), gate: undefined,
       payloadPct: payloadPct(job, a), fuelPct: Math.round(Math.max(20, Math.min(100, (needH / endurH) * 100))),
       cruiseFt: Math.min(a.v.cruiseFt, job.nm < 60 ? 4500 : job.nm < 200 ? Math.min(a.v.cruiseFt, 12000) : a.v.cruiseFt) });
     save('sky.cfg', this.cfg);

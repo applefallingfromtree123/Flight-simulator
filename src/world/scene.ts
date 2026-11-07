@@ -14,6 +14,7 @@ import { geoidHeight } from './geoid.ts';
 import { ElevationService } from './terrain.ts';
 import { RunwayRenderer } from './runways.ts';
 import { AirportScenery } from './airportScenery.ts';
+import { Effects } from './effects.ts';
 import type { AirportDB, Runway, RunwayEnd } from './airports.ts';
 
 export type ImagerySource = 'google' | 'esri' | 'bing-ion' | 'sentinel2' | 'osm';
@@ -110,6 +111,8 @@ export class World {
   runways: RunwayRenderer;
   /** Our own airport buildings, jet bridges, aprons, taxiways and roads. */
   scenery: AirportScenery;
+  /** Rain / snow, lens flare, contrails. */
+  effects: Effects;
   private sceneryModel: object | null = null;
   view: ViewMode = 'cockpit';
   head = { yaw: 0, pitch: 0, zoom: 1 };
@@ -171,6 +174,7 @@ export class World {
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
     this.scenery = new AirportScenery(s, db, this.elevation);
+    this.effects = new Effects(s);
     this.scenery.onModel = m => { this.sceneryModel = m; };
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
@@ -179,6 +183,7 @@ export class World {
   }
 
   private tier = 1;
+  get qualityTier() { return this.tier; }
   /**
    * Graphics quality: render resolution (retina on high/ultra), HDR with PBR-neutral tone mapping,
    * sun-driven atmosphere and sky reflections on the aircraft, terrain detail, shadow quality, night bloom.
