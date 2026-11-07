@@ -271,10 +271,12 @@ export class FCS {
     if (this.ap && !a.isRotor && (Math.abs(pin.pitch) > 0.5 || Math.abs(pin.roll) > 0.5)) { this.engageAp(false); this.msg = 'AUTOPILOT DISCONNECT (조종간 개입)'; }
 
     if (this.plan.approach) this.ils = ilsDeviation(this.plan.approach, a, a.alt); else this.ils = null;
-    // takeoff thrust on the roll with the flight director on: TOGA / SRS guidance (and A/THR armed, Airbus style)
+    // takeoff thrust on the roll with the flight director on: TOGA / SRS guidance on the flight director
+    // (the autothrottle stays as the pilot left it, so pressing A/THR after takeoff engages it)
     if (!a.isRotor && a.onGround && this.fd && this.vert === 'OFF' && a.gs > 5 * KT && (a.engineCmd[0]?.throttle ?? 0) > 0.85 && a.def.cat !== 'glider') {
+      const athr = this.athr;
       this.toga();
-      if (this.hasAthr) this.athr = 'TOGA';
+      this.athr = athr;
     }
 
     if (a.isRotor) { this.heli(dt, pin); this.autothrottle(dt); return; }
