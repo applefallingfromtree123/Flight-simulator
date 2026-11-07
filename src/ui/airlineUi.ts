@@ -6,6 +6,7 @@ import { distance } from '../core/geo.ts';
 import type { FlightConfig } from './menu.ts';
 import {
   hangarCost, hubCost, leaseOutRate, resaleValue, returnFee, servedByHangar,
+  GRACE_DAYS, INSOLVENT, loanLimit, loanRate, netWorth, repayLoan, takeLoan,
   canFly, flightEconomics, loadAirline, market, maxPerDay, newAirline, refFare, registration, runDay, saveAirline,
 } from '../career/airline.ts';
 
@@ -33,6 +34,34 @@ export function renderAirline(el: HTMLElement, db: AirportDB, fly: (c: Partial<F
     return;
   }
   const save = () => { saveAirline(al); renderAirline(el, db, fly); };
+  // bankrupt: the creditors own the airline now — show what happened and start over
+  if (al.bankrupt) {
+    const b = al.bankrupt;
+    el.innerHTML = `
+      <div class="sec bankrupt">
+        <div class="bk-title">💥 파산</div>
+        <div class="job-h"><b>${al.name} (${al.code})</b><span class="dim">${b.day}일차에 문을 닫았습니다</span></div>
+        <p class="bk-reason">${b.reason}</p>
+        <div class="spec-grid">
+          <div><span>남은 부채</span>${usd(b.debt)}</div><div><span>압류된 기체</span>${b.fleet}대</div>
+          <div><span>운항하던 노선</span>${b.routes}개</div><div><span>최고 자금</span>${usd(b.best)}</div>
+        </div>
+        <p class="note">기체는 채권단에 압류되고 노선 운수권은 반납되었습니다. 새 항공사를 세워 다시 도전하세요.</p>
+        <button id="alRestart" class="primary" style="width:100%">새 항공사 설립</button>
+      </div>`;
+    el.querySelector<HTMLButtonElement>('#alRestart')!.onclick = () => { saveAirline(null); renderAirline(el, db, fly); };
+    return;
+  }
+  const nw = netWorth(al), limit = loanLimit(al), debtDays = al.debtDays ?? 0;
+  const warn = al.cash < 0
+    ? `<div class="bk-warn">⚠ 자금 부족 — ${debtDays}일째 적자입니다. ${Math.max(0, GRACE_DAYS - debtDays)}일 안에 자금을 플러스로 돌리지 못하면 <b>파산</b>합니다. 기체 판매·임대 내보내기·긴급 대출로 버티세요.</div>`
+    : nw.worth < INSOLVENT * 0.5 ? `<div class="bk-warn">⚠ 순자산 ${usd(nw.worth)} — ${usd(INSOLVENT)} 아래로 떨어지면 즉시 파산합니다.</div>` : '';
+  const financeHtml = `<div class="sec"><h3>재무</h3>
+      <div class="spec-grid"><div><span>보유 기체 가치</span>${usd(nw.assets)}</div><div><span>대출 잔액</span>${usd(nw.loan)}</div>
+        <div><span>순자산</span><b style="color:${nw.worth >= 0 ? 'var(--ok)' : 'var(--err)'}">${usd(nw.worth)}</b></div><div><span>추가 대출 한도</span>${usd(limit)}</div></div>
+      <div class="frow"><button id="loan10" ${limit <= 0 ? 'disabled' : ''}>긴급 대출 +$10M</button><button id="loanMax" ${limit <= 0 ? 'disabled' : ''}>한도까지 대출</button>
+        <button id="repay10" ${!nw.loan || al.cash <= 0 ? 'disabled' : ''}>상환 $10M</button><button id="repayAll" ${!nw.loan || al.cash <= 0 ? 'disabled' : ''}>전액 상환</button></div>
+      <p class="note">대출 이자는 하루 ${(loanRate * 100).toFixed(2)}% (연 약 ${Math.round(loanRate * 365 * 100)}%)입니다. 자금이 ${GRACE_DAYS}일 연속 마이너스이거나 순자산이 ${usd(INSOLVENT)} 아래가 되면 파산합니다.</p></div>`;
   const mk = market();
   const planeName = (id: string) => { const p = al.fleet.find(x => x.id === id); return p ? `${p.reg} ${getAircraft(p.type).name}` : '—'; };
   const routesHtml = al.routes.map(r => {
@@ -66,10 +95,12 @@ export function renderAirline(el: HTMLElement, db: AirportDB, fly: (c: Partial<F
       <div class="frow"><button id="alRename">✏️ 이름·코드 변경</button></div>
       <div class="spec-grid"><div><span>자금</span>${usd(al.cash)}</div><div><span>평판</span>${Math.round(al.rep)}/100</div>
         <div><span>기단</span>${al.fleet.length}대</div><div><span>노선</span>${al.routes.length}개</div></div>
+      ${warn}
       <button id="alDay" class="primary" style="width:100%">다음 날 진행 ▶</button>
       ${last ? `<div class="dim" style="font-size:12px">${last.day}일차 결과: 승객 ${last.lines.reduce((s, l) => s + l.pax, 0).toLocaleString()}명 · 매출 ${usd(last.revenue)} · 비용 ${usd(last.cost + last.leases)} · <b style="color:${last.profit >= 0 ? 'var(--ok)' : 'var(--err)'}">${usd(last.profit)}</b>
         ${last.events.map(e => `<br>⚠ ${e}`).join('')}</div>` : ''}
     </div>
+    ${financeHtml}
     <div class="sec">${depModeHtml()}</div>
     <div class="sec"><h3>노선</h3>${routesHtml}
       <div class="r-add r-add4"><select id="rFrom">${hubs.map(h => `<option value="${h}">${h} 출발</option>`).join('')}</select><input id="rTo" placeholder="도착 (ICAO)"><select id="rPlane">${al.fleet.filter(p => !p.leasedOut && !al.routes.some(r => r.planeId === p.id)).map(p => `<option value="${p.id}">${p.reg} ${getAircraft(p.type).name}</option>`).join('') || '<option value="">빈 기체 없음</option>'}</select>
@@ -87,6 +118,10 @@ export function renderAirline(el: HTMLElement, db: AirportDB, fly: (c: Partial<F
     <button id="alReset" style="width:100%;opacity:.7">항공사 초기화</button>`;
   const $ = (s: string) => el.querySelector<HTMLElement>(s)!;
   $('#alDay').onclick = () => { runDay(al, db); save(); };
+  $('#loan10').onclick = () => { takeLoan(al, 10_000_000); save(); };
+  $('#loanMax').onclick = () => { if (confirm(`${usd(limit)}를 대출할까요? 하루 이자 ${usd(limit * loanRate)}`)) { takeLoan(al, limit); save(); } };
+  $('#repay10').onclick = () => { repayLoan(al, 10_000_000); save(); };
+  $('#repayAll').onclick = () => { repayLoan(al, al.loan ?? 0); save(); };
   $('#alRename').onclick = () => {
     const n = prompt('항공사 이름', al.name);
     if (n === null) return;

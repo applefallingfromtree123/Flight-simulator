@@ -21,6 +21,11 @@ export interface Airline {
   /** All hubs (the first is the main hub); routes start at any of them. */
   hubs?: string[];
   hangars?: Hangar[];
+  /** Emergency loan outstanding (USD) and consecutive days with negative cash. */
+  loan?: number; debtDays?: number;
+  /** Set when the airline went bankrupt: the fleet is seized and the game is over. */
+  bankrupt?: { day: number; debt: number; reason: string; fleet: number; routes: number; best: number };
+  bestCash?: number;
   fleet: Plane[]; routes: Route[]; last: DayReport | null; history: { day: number; cash: number }[];
   flightNo: number;
 }
@@ -148,11 +153,59 @@ export function runDay(al: Airline, db: AirportDB): DayReport {
   if (lines.length) al.rep = Math.max(0, Math.min(100, al.rep + (lf > 0.95 ? -0.5 : 0.3) + (lf < 0.4 ? 0.4 : 0)));
   if (Math.random() < 0.06) { const bonus = Math.round(revenue * 0.1); events.push(`성수기 수요 증가! +$${bonus.toLocaleString()}`); al.cash += bonus; }
   al.cash += profit;
+  solvency(al, events);
   const rep: DayReport = { day: al.day, lines, revenue, cost, leases, profit, events };
   al.last = rep; al.day++;
   al.history.push({ day: al.day, cash: al.cash });
   if (al.history.length > 60) al.history.shift();
   return rep;
+}
+
+// ───────────── loans and bankruptcy ─────────────
+/** Days of negative cash before the creditors take over. */
+export const GRACE_DAYS = 7;
+/** Net worth below which the airline is insolvent at once. */
+export const INSOLVENT = -50_000_000;
+export const loanRate = 0.0006;   // per day (~24 %/yr): emergency money is expensive
+/** What owned aircraft would fetch, the loan outstanding and the resulting net worth. */
+export function netWorth(al: Airline) {
+  const assets = al.fleet.filter(p => p.owned).reduce((s, p) => s + resaleValue(p), 0);
+  return { assets, loan: al.loan ?? 0, worth: al.cash + assets - (al.loan ?? 0) };
+}
+/** Credit line: a base amount plus half of what the owned fleet is worth, less what is already borrowed. */
+export function loanLimit(al: Airline) { return Math.max(0, Math.round((30_000_000 + netWorth(al).assets * 0.5 - (al.loan ?? 0)) / 1e6) * 1e6); }
+export function takeLoan(al: Airline, amt: number) {
+  const a = Math.min(amt, loanLimit(al));
+  if (a <= 0 || al.bankrupt) return 0;
+  al.loan = (al.loan ?? 0) + a; al.cash += a;
+  return a;
+}
+export function repayLoan(al: Airline, amt: number) {
+  const a = Math.min(amt, al.loan ?? 0, Math.max(0, al.cash));
+  al.loan = (al.loan ?? 0) - a; al.cash -= a;
+  return a;
+}
+const money = (v: number) => (v < 0 ? '−$' : '$') + Math.abs(Math.round(v)).toLocaleString();
+/** End-of-day solvency check: interest, the grace period, and bankruptcy. */
+function solvency(al: Airline, events: string[]) {
+  if (al.loan) {
+    const i = Math.round(al.loan * loanRate);
+    al.cash -= i;
+    events.push(`대출 이자 −${money(i).slice(0)}`);
+  }
+  al.bestCash = Math.max(al.bestCash ?? 0, al.cash);
+  const { worth } = netWorth(al);
+  if (al.cash < 0) {
+    al.debtDays = (al.debtDays ?? 0) + 1;
+    const left = GRACE_DAYS - al.debtDays;
+    if (left > 0) events.push(`자금 부족 (${al.debtDays}일째) — ${left}일 안에 자금을 플러스로 돌리지 못하면 파산합니다`);
+  } else al.debtDays = 0;
+  const reason = worth < INSOLVENT ? `순자산 ${money(worth)} — 채무 초과`
+    : (al.debtDays ?? 0) >= GRACE_DAYS ? `${GRACE_DAYS}일 연속 자금 부족 — 채권단이 회사를 인수했습니다` : '';
+  if (reason) {
+    al.bankrupt = { day: al.day, debt: Math.round(Math.max(0, (al.loan ?? 0) - al.cash)), reason, fleet: al.fleet.length, routes: al.routes.length, best: Math.round(al.bestCash ?? 0) };
+    events.push(`💥 파산: ${reason}`);
+  }
 }
 
 export function registration(al: Airline) {

@@ -380,3 +380,9 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 .dep-mode button small { font-size: 11px; opacity: .7; font-weight: 400; white-space: normal; }
 .dep-mode button.on { outline: 2px solid var(--accent, #4aa3ff); background: rgba(74,163,255,.18); }
 @media (max-width: 700px) { .dep-mode { grid-template-columns: 1fr 1fr; } .dep-mode > span { grid-column: 1 / -1; } }
+
+/* airline: money trouble and bankruptcy */
+.bk-warn { margin: 8px 0; padding: 9px 12px; border-radius: 10px; background: rgba(229, 72, 77, .16); border: 1px solid rgba(229, 72, 77, .55); font-size: 13px; line-height: 1.45; }
+.bankrupt { text-align: left; border: 1px solid rgba(229, 72, 77, .6); background: linear-gradient(180deg, rgba(120, 20, 24, .45), rgba(20, 22, 28, .6)); }
+.bankrupt .bk-title { font-size: 34px; font-weight: 800; letter-spacing: .04em; color: #ff6b6f; margin-bottom: 6px; }
+.bankrupt .bk-reason { font-size: 15px; margin: 8px 0 10px; }

@@ -217,7 +217,7 @@ class App {
     if (this.airlineDone || !cfg.airlineRoute) return;
     const al = loadAirline();
     const r = al?.routes.find(x => x.id === cfg.airlineRoute);
-    if (!al || !r || !this.pax) return;
+    if (!al || al.bankrupt || !r || !this.pax) return;
     this.airlineDone = true;
     const e = flightEconomics(al, { ...r, from: cfg.dep, to: cfg.arr }, this.db);
     const c = this.pax.comfort;
