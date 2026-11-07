@@ -1,7 +1,7 @@
 // SkyLine Flight Simulator — application entry: boot, flight setup, main loop.
 import * as Cesium from 'cesium';
 import { DEG, FT, KT, NM, RAD, clamp, qFromEuler, wrap360 } from './core/math.ts';
-import { alongTrack, crossTrack, destination, magVar } from './core/geo.ts';
+import { alongTrack, crossTrack, destination, distance, magVar } from './core/geo.ts';
 import { Aircraft } from './sim/fdm.ts';
 import { FCS, type Waypoint } from './sim/fcs.ts';
 import { Systems } from './sim/systems.ts';
@@ -375,7 +375,23 @@ class App {
     if (arr) wps.push({ ident: arr.icao, lat: arr.lat, lon: arr.lon, kind: 'apt' });
     fcs.plan.wps = wps; fcs.plan.active = 1; fcs.plan.cruiseFt = cfg.cruiseFt;
     const arrEnd = arr ? runwayEnds(arr).find(r => r.end.ident === cfg.arrRwy) ?? runwayEnds(arr)[0] : undefined;
-    if (arr && arrEnd) { fcs.plan.approach = makeApproach(arr, arrEnd.rw, arrEnd.end); fcs.ilsTuned = true; }
+    if (arr && arrEnd) {
+      const ap = makeApproach(arr, arrEnd.rw, arrEnd.end);
+      fcs.plan.approach = ap; fcs.ilsTuned = true;
+      // the approach: intermediate fix 16 NM and final approach fix 10 NM out on the extended centreline (with
+      // altitude constraints for VNAV), then the runway threshold — so NAV lines up with the localizer
+      const elevFt = ap.elev / FT;
+      const iF = destination(ap.thr, ap.crs + 180, 16 * NM), faf = destination(ap.thr, ap.crs + 180, 10 * NM);
+      const last = wps[wps.length - 1];
+      if (wps.length >= 2 && last.ident === arr.icao) {
+        const before = wps[wps.length - 2];
+        const fromBefore = distance(before, ap.thr) / NM;
+        const add: Waypoint[] = [];
+        if (fromBefore > 20) add.push({ ident: `IF${ap.runway}`, lat: iF.lat, lon: iF.lon, alt: Math.round((elevFt + 4900) / 100) * 100, kind: 'user' });
+        if (fromBefore > 12) add.push({ ident: `FF${ap.runway}`, lat: faf.lat, lon: faf.lon, alt: Math.round((elevFt + 3000) / 100) * 100, kind: 'user' });
+        wps.splice(wps.length - 1, 1, ...add, { ...last, lat: ap.thr.lat, lon: ap.thr.lon, kind: 'rwy' });
+      }
+    }
     fcs.selAlt = Math.min(cfg.cruiseFt, def.v.ceil);
     // time of day
     const date = this.simDate(cfg, dep);
@@ -453,6 +469,12 @@ class App {
       ac.flapIdx = n <= 1 ? 0 : def.flaps === 'ga' || def.flaps === 'split' || def.flaps === 'bizjet' || def.flaps === 'fighter' ? 1 : Math.min(2, n - 1);
       ac.flapPos = ac.aero.flaps[ac.flapIdx].deg;
     };
+    // airliners and bizjets with a route: LNAV / VNAV and managed speed armed for the takeoff (like an MSFS / real
+    // FMS setup) — TOGA thrust gives SRS guidance, NAV engages at 50 ft and VNAV at the thrust reduction altitude
+    const preArm = () => {
+      if (def.fdm === 'rotor' || !fcs.hasAthr || fcs.plan.wps.length < 2 || !['airliner', 'widebody', 'regional', 'bizjet'].includes(def.cat)) return;
+      fcs.latArmed = 'NAV'; fcs.vertArmed = 'VNAV'; fcs.spdManaged = true; fcs.vnavPhase = 'CLB';
+    };
     if (start === 'gate') {
       // parked at a stand: power on, engines off, parking brake set; boarding, then push and start
       const stand = cfg.gate ?? (await airportLayout(dep)).stands[0];
@@ -467,6 +489,7 @@ class App {
       for (const c of ac.engineCmd) c.throttle = 0;
       fcs.selHdg = Math.round(wrap360(depEnd.end.hdg - magVar(stand.lat, stand.lon))) || 360;
       fcs.selSpd = def.fdm === 'rotor' ? 80 : Math.round(Math.min(250, def.v.vmo - 20, (def.v.v2 ?? def.v.vr + 10) + 40));
+      preArm();
       return;
     }
     if (start === 'runway' || start === 'cold') {
@@ -485,6 +508,7 @@ class App {
       fcs.selHdg = Math.round(wrap360(p.hdg - magVar(p.lat, p.lon))) || 360;
       fcs.selSpd = def.fdm === 'rotor' ? 80 : Math.round(Math.min(250, def.v.vmo - 20, (def.v.v2 ?? def.v.vr + 10) + 40));
       if (def.cat === 'ga' || def.cat === 'vintage') fcs.selSpd = Math.round(def.v.vr * 1.35);
+      preArm();
       for (const c of ac.engineCmd) c.throttle = def.fdm === 'rotor' && ready ? 1 : 0;
       ac.collective = 0;
       return;
@@ -548,7 +572,12 @@ class App {
     if (start === 'final') fcs.selAlt = Math.round((fcs.plan.approach!.elev / FT + 3000) / 100) * 100;
     if (def.cat !== 'glider' && !cfg.handFly) {
       fcs.engageAp(true);
-      if (start === 'cruise') { fcs.lat = fcs.plan.to ? 'NAV' : 'HDG'; fcs.vert = 'ALT'; fcs.altHold = fcs.selAlt; if (def.v.mmo < 1 && ac.mach > 0.6) { fcs.spdIsMach = true; fcs.selMach = Math.round(ac.mach * 100) / 100; } }
+      if (start === 'cruise') {
+        fcs.lat = fcs.plan.to ? 'NAV' : 'HDG'; fcs.vert = 'ALT'; fcs.altHold = fcs.selAlt;
+        if (def.v.mmo < 1 && ac.mach > 0.6) { fcs.spdIsMach = true; fcs.selMach = Math.round(ac.mach * 100) / 100; }
+        // with a route: VNAV cruise (it will start the descent at the top of descent once the MCP altitude is lowered)
+        if (fcs.plan.to && fcs.hasAthr && def.cat !== 'ga' && def.cat !== 'vintage') { fcs.setVert('VNAV'); fcs.vnavPhase = 'CRZ'; fcs.altHold = fcs.selAlt; fcs.vnavSub = 'ALT'; }
+      }
       else if (start === 'final') { fcs.lat = 'HDG'; fcs.vert = 'ALT'; fcs.altHold = altM / FT; fcs.selAlt = Math.round(fcs.selAlt); if (def.fdm !== 'rotor') fcs.armApp(); }
       else { fcs.lat = 'HDG'; fcs.vert = 'ALT'; fcs.altHold = altM / FT; }
       if (fcs.hasAthr) fcs.toggleAthr();
@@ -611,6 +640,8 @@ class App {
       case 'alt': f.setVert('ALT'); break;
       case 'vs': f.setVert('VS'); break;
       case 'flc': f.setVert('FLC'); break;
+      case 'vnav': f.setVert('VNAV'); if (f.msg) break; toast(f.vert === 'VNAV' ? 'VNAV — 비행계획 고도·속도로 상승/순항/강하' : f.vertArmed === 'VNAV' ? 'VNAV 준비 (이륙 후 감속 고도에서 연결)' : 'VNAV 해제'); break;
+      case 'spdmng': f.spdManaged = !f.spdManaged; if (!f.spdManaged) f.selSpd = Math.round(f.targetIas()); toast(f.spdManaged ? '속도 관리 모드 (FMS 속도)' : '선택 속도 모드'); break;
       case 'toga': f.toga(); if (f.hasAthr) for (const c of ac.engineCmd) c.throttle = ac.def.eng.ab ? 0.95 : 1; break;
       case 'spdmach': f.spdIsMach = !f.spdIsMach; if (f.spdIsMach) f.selMach = Math.round(ac.mach * 100) / 100; else f.selSpd = Math.round(ac.ias / KT); break;
       case 'pause': this.paused = !this.paused; break;

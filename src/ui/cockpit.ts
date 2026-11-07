@@ -65,7 +65,9 @@ export class Cockpit {
       <div class="mcp-grp" data-knob="${id}"><label>${label}</label><div class="mcp-val" id="mv_${id}">${get()}</div>
       <div class="mcp-row"><button data-k="${id}" data-d="-1">−</button><button data-k="${id}" data-d="1">+</button></div></div>`;
     const knobs: Record<string, { get: () => string; step: (d: number, big: boolean) => void; set?: (v: number) => void }> = {
-      spd: { get: () => f.spdIsMach ? f.selMach.toFixed(2) : String(f.selSpd), step: (d, big) => { if (f.spdIsMach) f.selMach = clamp(+(f.selMach + d * (big ? 0.05 : 0.01)).toFixed(2), 0.3, 2.2); else f.selSpd = clamp(f.selSpd + d * (big ? 10 : 1), 30, 700); }, set: v => { if (v < 3) { f.spdIsMach = true; f.selMach = v; } else { f.spdIsMach = false; f.selSpd = Math.round(v); } } },
+      spd: { get: () => f.spdManaged ? `(${Math.round(f.targetIas())})` : f.spdIsMach ? f.selMach.toFixed(2) : String(f.selSpd), step: (d, big) => {
+        // turning the speed knob takes over from managed speed (selected speed starts from the managed one)
+        if (f.spdManaged) { f.spdManaged = false; f.selSpd = Math.round(f.targetIas()); } if (f.spdIsMach) f.selMach = clamp(+(f.selMach + d * (big ? 0.05 : 0.01)).toFixed(2), 0.3, 2.2); else f.selSpd = clamp(f.selSpd + d * (big ? 10 : 1), 30, 700); }, set: v => { f.spdManaged = false; if (v < 3) { f.spdIsMach = true; f.selMach = v; } else { f.spdIsMach = false; f.selSpd = Math.round(v); } } },
       hdg: { get: () => String(f.selHdg).padStart(3, '0'), step: (d, big) => { f.selHdg = Math.round(wrap360(f.selHdg + d * (big ? 10 : 1))) || 360; }, set: v => { f.selHdg = Math.round(wrap360(v)) || 360; } },
       alt: { get: () => String(f.selAlt), step: (d, big) => { f.selAlt = clamp(f.selAlt + d * (big ? 1000 : 100), 0, 60000); }, set: v => { f.selAlt = clamp(Math.round(v / 100) * 100, 0, 60000); } },
       vs: { get: () => (f.selVs > 0 ? '+' : '') + f.selVs, step: (d, big) => { f.selVs = clamp(f.selVs + d * (big ? 500 : 100), -8000, 8000); if (f.vert !== 'VS' && f.ap && !heli) f.setVert('VS'); }, set: v => { f.selVs = clamp(Math.round(v / 100) * 100, -8000, 8000); } },
@@ -84,6 +86,7 @@ export class Cockpit {
         ${btn('ap', 'AP')}${btn('athr', 'A/THR')}${btn('fd', 'FD')}${heli ? btn('sas', 'SAS') : btn('toga', 'TOGA')}
         ${btn('hdg', 'HDG')}${btn('nav', 'NAV')}${btn('loc', 'LOC')}${btn('app', 'APPR')}
         ${btn('alt', 'ALT')}${btn('vs', 'V/S')}${btn('flc', heli ? 'IAS' : 'FLC')}${btn('spdmach', 'SPD/M')}
+        ${heli ? '' : `${btn('vnav', 'VNAV')}${btn('spdmng', 'SPD MNG')}`}
       </div>
       ${knob('baro', 'BARO hPa', knobs.baro.get, knobs.baro.step)}
       ${knob('mins', 'MINS RA', knobs.mins.get, knobs.mins.step)}
@@ -114,6 +117,8 @@ export class Cockpit {
     on('ap', f.ap); on('athr', f.athr !== 'OFF'); on('fd', f.fd); on('sas', f.sas);
     on('hdg', f.lat === 'HDG'); on('nav', f.lat === 'NAV'); on('loc', f.lat === 'LOC', f.latArmed === 'LOC'); on('app', f.vert === 'GS' || f.vert === 'FLARE', f.vertArmed === 'GS');
     on('alt', f.vert === 'ALT' || f.vert === 'ALT*'); on('vs', f.vert === 'VS'); on('flc', f.vert === 'FLC'); on('toga', f.vert === 'TOGA'); on('spdmach', f.spdIsMach);
+    on('vnav', f.vert === 'VNAV', f.vertArmed === 'VNAV'); on('spdmng', f.spdManaged);
+    on('nav', f.lat === 'NAV', f.latArmed === 'NAV');
     document.getElementById('mwarn')!.className = 'mwbtn' + (this.sys.masterWarning ? ' w' : '');
     document.getElementById('mcaut')!.className = 'mwbtn' + (this.sys.masterCaution ? ' c' : '');
   }

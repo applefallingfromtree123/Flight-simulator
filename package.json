@@ -18,7 +18,8 @@
     "data": "node tools/build-data.mjs",
     "aircraft": "node tools/fgconv/convert.mjs",
     "aircraft:ipad": "node tools/fgconv/convert.mjs --profile ipad",
-    "aircraft:web": "python3 tools/fgconv/web.py --out public/aircraft"
+    "aircraft:web": "python3 tools/fgconv/web.py --out public/aircraft",
+    "aptest": "node --experimental-transform-types --no-warnings tools/aptest/flight.ts"
   },
   "dependencies": {
     "cesium": "^1.145.0",

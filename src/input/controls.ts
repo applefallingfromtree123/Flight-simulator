@@ -7,7 +7,7 @@ export interface GamepadConfig { roll?: AxisBind; pitch?: AxisBind; yaw?: AxisBi
 export const KEY_ACTIONS: Record<string, string> = {
   'KeyG': 'gear', 'F5': 'flaps-up-full', 'F6': 'flaps-up', 'F7': 'flaps-down', 'F8': 'flaps-full',
   'Slash': 'spoilers', 'Shift+Slash': 'spoilers-arm', 'Ctrl+Period': 'parking-brake', 'Shift+Period': 'parking-brake',
-  'KeyZ': 'ap', 'Shift+KeyZ': 'athr', 'KeyH': 'hdg', 'KeyN': 'nav', 'KeyJ': 'alt', 'KeyV': 'vs', 'KeyK': 'flc', 'KeyU': 'app',
+  'KeyZ': 'ap', 'Shift+KeyZ': 'athr', 'KeyH': 'hdg', 'KeyN': 'nav', 'KeyJ': 'alt', 'KeyV': 'vs', 'KeyK': 'flc', 'KeyU': 'app', 'Shift+KeyK': 'vnav', 'Shift+KeyJ': 'spdmng',
   'Shift+KeyT': 'toga', 'KeyP': 'pause', 'Equal': 'rate-up', 'Minus': 'rate-down',
   'Digit1': 'view-cockpit', 'Digit2': 'view-hud', 'Digit3': 'view-chase', 'Digit4': 'view-tower', 'Digit5': 'view-flyby', 'Digit6': 'view-free',
   'KeyL': 'lights', 'Ctrl+KeyE': 'autostart', 'KeyB': 'baro', 'Shift+KeyB': 'baro-std', 'KeyC': 'checklist', 'KeyM': 'map',

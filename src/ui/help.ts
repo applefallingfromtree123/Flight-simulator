@@ -18,7 +18,9 @@ export const KEY_HELP = `
 <tr><td>Shift+Z</td><td>오토스로틀 (A/THR)</td></tr>
 <tr><td>H · N · U</td><td>HDG · NAV(LNAV) · APP(LOC+G/S)</td></tr>
 <tr><td>J · V · K</td><td>ALT HOLD · V/S · FLC(LVL CHG)</td></tr>
+<tr><td>Shift+K · Shift+J</td><td>VNAV · 속도 관리(SPD MNG)</td></tr>
 <tr><td>Shift+T</td><td>TO/GA</td></tr>
+<tr><td colspan="2" class="note">이륙: 활주 중 추력을 85% 이상 올리면 TOGA(SRS) 자동 — 비행계획이 있으면 NAV는 50ft, VNAV는 1500ft에서 자동 연결. 순항 중 강하 시작점(T/D)에서 MCP 고도를 낮추면 VNAV가 3° 경로로 강하하고, 목적지 25NM 안에서 ILS 접근이 자동으로 준비됩니다.</td></tr>
 <tr><td>F</td><td>Flight Director</td></tr>
 <tr><td>I</td><td>헬기 SAS</td></tr>
 <tr><td colspan="2" class="note">MCP 숫자 위에서 마우스 휠로 값 변경, 클릭하면 직접 입력.</td></tr>

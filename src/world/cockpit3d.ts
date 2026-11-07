@@ -551,7 +551,7 @@ function drawFcu(cv: HTMLCanvasElement, av: AvData, ac: Aircraft) {
   g.fillStyle = '#2d3238'; g.fillRect(0, 0, cv.width, cv.height);
   const on = sys.avionicsPowered;
   const groups: [string, string][] = [
-    ['SPD', fcs.spdIsMach ? fcs.selMach.toFixed(2) : String(fcs.selSpd)],
+    ['SPD', fcs.spdManaged ? '---' : fcs.spdIsMach ? fcs.selMach.toFixed(2) : String(fcs.selSpd)],
     ['HDG', String(fcs.selHdg).padStart(3, '0')],
     ['ALT', String(fcs.selAlt)],
     ['V/S', (fcs.selVs > 0 ? '+' : '') + fcs.selVs],

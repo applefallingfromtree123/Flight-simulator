@@ -106,7 +106,7 @@ export class PFD extends Display {
       else if (ac.flapIdx > 0) bug(v.vref, 'REF', C.green);
     }
     // selected speed
-    const sel = fcs.spdIsMach ? fcs.selMach * ac.air.a / (ac.tas / Math.max(ac.ias, 1)) / KT : fcs.selSpd;
+    const sel = fcs.targetIas();
     const ysel = clamp(cy - (sel - vis) * spx, cy - 132, cy + 132);
     g.fillStyle = C.magenta; g.beginPath(); g.moveTo(sx + sw, ysel); g.lineTo(sx + sw - 10, ysel - 7); g.lineTo(sx + sw - 10, ysel + 7); g.fill();
     g.restore();
@@ -114,7 +114,7 @@ export class PFD extends Display {
     if (Math.abs(this.trendIas) > 0.2) { const ty = cy - this.trendIas * 10 * spx; line(g, sx + sw + 4, cy, sx + sw + 4, ty, C.green, 2); }
     box(g, sx, cy - 16, sw - 4, 32, C.yellow);
     text(g, String(Math.max(0, Math.round(ias))), sx + sw - 8, cy, C.white, 20, 'right');
-    text(g, fcs.spdIsMach ? `.${pad(fcs.selMach * 1000, 3)}` : String(Math.round(fcs.selSpd)), sx + sw / 2, cy - 147, C.magenta, 15);
+    text(g, fcs.spdManaged ? String(Math.round(sel)) : fcs.spdIsMach ? `.${pad(fcs.selMach * 1000, 3)}` : String(Math.round(fcs.selSpd)), sx + sw / 2, cy - 147, fcs.spdManaged ? C.magenta : C.cyan, 15);
     if (ac.mach > 0.4) text(g, `.${pad(ac.mach * 1000, 3)}`, sx + sw / 2, cy + 150, C.white, 15);
     else text(g, `GS ${Math.round(ac.gs / KT)}`, sx + sw / 2, cy + 150, C.dim, 12);
     // ── altitude tape ──
@@ -169,7 +169,7 @@ export class PFD extends Display {
     g.fillStyle = '#000'; g.fillRect(0, 0, 420, 44);
     const cols = [
       [fcs.athr !== 'OFF' ? fcs.athrDisplay : '', C.green],
-      [fcs.vert !== 'OFF' ? fcs.vert : '', C.green],
+      [fcs.vertFma, C.green],
       [fcs.lat !== 'OFF' ? fcs.lat : '', C.green],
       [fcs.vertArmed || fcs.latArmed ? `${fcs.latArmed ?? ''} ${fcs.vertArmed ?? ''}` : '', C.cyan],
       [fcs.ap ? 'AP1' : ac.isRotor && fcs.sas ? 'SAS' : '', C.white],
@@ -179,6 +179,7 @@ export class PFD extends Display {
     if (fcs.athr !== 'OFF') text(g, 'A/THR', 42, 32, C.white, 11);
     if (ac.def.fbw && fcs.alphaProt) text(g, 'α PROT', 126, 32, C.amber, 11);
     if (fcs.vert === 'VS') text(g, `${fcs.selVs >= 0 ? '+' : ''}${fcs.selVs}`, 126, 32, C.cyan, 11);
+    if (fcs.vert === 'VNAV' && fcs.todNm !== null && fcs.todNm > 0.1 && fcs.vnavPhase !== 'DES') text(g, `T/D ${fcs.todNm.toFixed(0)}NM`, 294, 32, C.magenta, 11);
     if (sys.masterWarning) text(g, 'MASTER WARN', 210, 32, C.red, 11);
     else if (sys.masterCaution) text(g, 'MASTER CAUT', 210, 32, C.amber, 11);
     // helicopter extras

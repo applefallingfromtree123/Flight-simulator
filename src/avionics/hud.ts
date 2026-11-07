@@ -68,7 +68,7 @@ export class HUD {
     g.fillText(`${Math.round(ac.vs / FPM)} VS`, ax + 43, by + 32);
     const ra = (ac.agl - ac.aero.cgHeight) / FT;
     if (ra < 5000) g.fillText(`R ${Math.round(ra)}`, ax + 43, by + 52);
-    g.fillText(`${fcs.selSpd}`, bx + 35, by - 32);
+    g.fillText(`${Math.round(fcs.targetIas())}`, bx + 35, by - 32);
     g.fillText(`${fcs.selAlt}`, ax + 43, by - 32);
     // heading tape
     const hdg = wrap360(ac.heading - magVar(ac.lat, ac.lon));
@@ -82,7 +82,7 @@ export class HUD {
     g.beginPath(); g.moveTo(W / 2, ty + 14); g.lineTo(W / 2 - 6, ty + 24); g.lineTo(W / 2 + 6, ty + 24); g.closePath(); g.stroke();
     // modes
     g.font = `bold 14px "B612 Mono", Consolas, monospace`;
-    g.fillText([fcs.athr !== 'OFF' ? fcs.athrDisplay : '', fcs.vert !== 'OFF' ? fcs.vert : '', fcs.lat !== 'OFF' ? fcs.lat : '', fcs.ap ? 'AP' : ''].filter(Boolean).join('   '), W / 2, H / 2 + H * 0.36);
+    g.fillText([fcs.athr !== 'OFF' ? fcs.athrDisplay : '', fcs.vertFma, fcs.lat !== 'OFF' ? fcs.lat : '', fcs.ap ? 'AP' : ''].filter(Boolean).join('   '), W / 2, H / 2 + H * 0.36);
     if (sys.alerts.some(a => a.level === 'warning')) { g.fillStyle = '#ff5050'; g.fillText(sys.alerts.find(a => a.level === 'warning')!.text, W / 2, H / 2 + H * 0.3); }
     void DEG;
   }

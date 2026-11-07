@@ -3,6 +3,7 @@
 import { DEG, FPM, FT, G0, KT, NM, PID, RAD, approach, clamp, moveToward, wrap180 } from '../core/math.ts';
 import { alongTrack, bearing, crossTrack, distance, magVar, type LatLon } from '../core/geo.ts';
 import type { Aircraft } from './fdm.ts';
+import { maxThrust } from './engines.ts';
 
 export interface PilotInput { pitch: number; roll: number; yaw: number; trim: number; collective: number }
 
@@ -91,6 +92,18 @@ export class FCS {
   private heliAltPid = new PID(0.0025, 0.0006, 0, 0.25, 0.4);
   private lastIas = 0; private accel = 0;
   ilsTuned = false;
+  /** Managed (FMS) speed: 250 kt below 10 000 ft, climb/cruise/descent speeds, Mach above the crossover, flap speeds. */
+  spdManaged = false;
+  /** VNAV state: climb at managed speed, cruise, path descent from the top of descent. */
+  vnavSub: 'SPD' | 'PTH' | 'ALT' = 'SPD';
+  vnavPhase: 'CLB' | 'CRZ' | 'DES' = 'CLB';
+  /** Distance to the top of descent (NM, negative once past it), for the ND / FMS. */
+  todNm: number | null = null;
+  private vnavVs = 0;
+  private thrI = 0;
+  private lastSinG = 0;
+  private srsSpd = 0;
+  private msgT = 0;
   /** magnetic variation at the aircraft (deg, east +). Selected headings are magnetic. */
   magv = 0;
   get hdgM() { return ((this.ac.heading - this.magv) % 360 + 360) % 360; }
@@ -117,6 +130,60 @@ export class FCS {
     return { v1: vr - 4, vr, v2: (d.v.v2 ?? vr + 8) * w + (d.v.v2 ? 0 : 0), vref: this.vref(), vapp: this.vref() + 5 };
   }
 
+  // ───────────────────────── speeds ─────────────────────────
+  /** Knots IAS per unit Mach here and now. */
+  private iasPerMach() { const a = this.ac; return a.air.a * Math.max(a.ias, 1) / Math.max(a.tas, 1) / KT; }
+  private flapFrac() { const n = this.ac.aero.flaps.length; return n > 1 ? this.ac.flapIdx / (n - 1) : 0; }
+  /** Lowest selectable speed for the configuration (1.23 Vs at this weight). */
+  vls() {
+    const a = this.ac, d = a.def;
+    const vs = d.v.vs1 + (d.v.vs0 - d.v.vs1) * this.flapFrac();
+    return 1.23 * vs * Math.sqrt(a.mass / Math.max(1, d.m.mlw));
+  }
+  /** Highest speed: VMO/MMO, the flap placard for the current setting, gear extended. */
+  vmax() {
+    const a = this.ac, d = a.def;
+    let v = d.v.vmo - 5;
+    if (d.v.mmo > 0.2) v = Math.min(v, (d.v.mmo - 0.01) * this.iasPerMach());
+    if (a.flapIdx > 0) v = Math.min(v, d.v.vfe + (Math.min(d.v.vmo, 250) - d.v.vfe) * (1 - this.flapFrac()) - 3);
+    if (a.gearPos > 0.05 && d.gear.retract) v = Math.min(v, d.v.vle - 3);
+    return v;
+  }
+  /** Cruise Mach from the type's cruise TAS at the planned cruise level. */
+  private cruiseMach() {
+    const d = this.ac.def, h = Math.min(this.plan.cruiseFt, d.v.ceil) * FT;
+    const T = Math.max(216.65, 288.15 - 0.0065 * h);
+    return Math.min(d.v.mmo - 0.02, (d.v.cruise * KT) / Math.sqrt(1.4 * 287.05 * T));
+  }
+  /** Managed speed for the phase of flight (KIAS). */
+  managedIas() {
+    const a = this.ac, d = a.def, altFt = a.alt / FT, ipm = this.iasPerMach();
+    const n = a.aero.flaps.length;
+    if (a.flapIdx > 0) return a.flapIdx === n - 1 ? this.vref() + 5 : Math.max(this.vls() + 10, this.vmax() - 15);
+    const jet = this.isJet;
+    const econ = jet ? Math.min(d.v.vmo - 25, d.cat === 'widebody' ? 310 : d.cat === 'bizjet' ? 280 : 290) : Math.min(d.v.vmo - 10, d.v.cruise * 0.92);
+    // close to the destination and low: slow down for the approach (clean minimum + a margin)
+    const destNm = this.plan.wps.length ? this.plan.remainingNm(a) : 999;
+    const destElev = this.plan.approach ? this.plan.approach.elev / FT : 0;
+    if (this.plan.approach && destNm < 18 && altFt < destElev + 5000) return Math.max(this.vls() + 25, Math.min(econ, jet ? 210 : econ));
+    let v = econ;
+    if (d.v.mmo > 0.2 && jet) v = Math.min(v, this.cruiseMach() * ipm);   // Mach above the crossover
+    if (altFt < 10000 + (this.plan.approach ? 0 : 0)) v = Math.min(v, 250);
+    return Math.max(v, this.vls() + 10);
+  }
+  /** The speed the autopilot and autothrottle actually fly (selected or managed, within the limits). */
+  targetIas() {
+    const raw = this.spdManaged ? this.managedIas() : this.spdIsMach ? this.selMach * this.iasPerMach() : this.selSpd;
+    const lo = this.ac.onGround ? 0 : this.vls() + 3, hi = this.vmax();
+    return clamp(raw, Math.min(lo, hi), hi);
+  }
+  /** Mode annunciations for the PFD / HUD. */
+  get vertFma(): string {
+    if (this.vert === 'VNAV') return `VNAV ${this.vnavSub}`;
+    if (this.vert === 'TOGA' && !this.ac.onGround) return 'SRS';
+    return this.vert === 'OFF' ? '' : this.vert;
+  }
+
   // ───────────────────────── mode engagement ─────────────────────────
   engageAp(on: boolean) {
     const a = this.ac;
@@ -124,6 +191,8 @@ export class FCS {
     this.ap = on;
     if (on) {
       if (a.onGround && !a.isRotor) { this.ap = false; this.msg = 'AP: 지상에서는 연결할 수 없습니다'; return; }
+      if (this.latArmed === 'NAV' && this.plan.to) { this.lat = 'NAV'; this.latArmed = null; }
+      if (this.vertArmed === 'VNAV' && this.plan.to && this.vert === 'OFF') { this.vertArmed = null; this.setVert('VNAV'); }
       if (this.lat === 'OFF') { this.lat = 'HDG'; this.selHdg = Math.round(this.hdgM) || 360; }
       if (this.vert === 'OFF') {
         this.vert = 'VS'; this.selVs = Math.round(a.vs / FPM / 100) * 100;
@@ -140,13 +209,15 @@ export class FCS {
   altHold = 0;
   setLat(m: LatMode) {
     if (m === 'LOC') { this.latArmed = this.lat === 'LOC' ? null : 'LOC'; return; }
+    // on the ground (or below 50 ft on the takeoff) NAV is armed and engages once airborne
+    if (m === 'NAV' && (this.ac.onGround || this.lat === 'RWY')) { this.latArmed = this.latArmed === 'NAV' ? null : 'NAV'; return; }
     this.lat = this.lat === m ? 'HDG' : m;
     if (this.lat === 'HDG' && m !== 'HDG') this.selHdg = Math.round(this.hdgM) || 360;
   }
   setVert(m: VertMode) {
     const a = this.ac;
     this.vsPid.reset();
-    if (m === this.vert) { m = 'VS'; }
+    if (m === this.vert) { m = this.vert === 'VNAV' ? 'ALT' : 'VS'; }
     if (m === 'ALT') { this.altHold = Math.round(a.alt / FT); }
     if (m === 'VS') { this.selVs = Math.round(a.vs / FPM / 100) * 100; }
     if (m === 'FLC') {
@@ -155,6 +226,14 @@ export class FCS {
       this.selSpd = Math.round(a.ias / KT);
     }
     if (m === 'PIT') this.pitchHold = a.theta * RAD;
+    if (m === 'VNAV') {
+      if (!this.plan.to) { this.msg = 'VNAV: 비행계획이 없습니다'; return; }
+      if (a.onGround || this.vert === 'TOGA') { this.vertArmed = this.vertArmed === 'VNAV' ? null : 'VNAV'; this.spdManaged = true; return; }
+      this.spdManaged = true;
+      this.flcGamma = Math.atan2(a.vs, a.tas) * RAD;
+      this.altHold = Math.round(a.alt / FT);
+      this.vnavSub = 'ALT';
+    }
     this.vert = m;
   }
   armApp() {
@@ -166,11 +245,16 @@ export class FCS {
     this.vert = 'TOGA'; this.lat = a.onGround ? 'RWY' : 'GA';
     this.selHdg = Math.round(this.hdgM) || 360;
     if (this.hasAthr) this.athr = 'TOGA';
-    this.flare = false; this.gsCaptured = false; this.latArmed = null; this.vertArmed = null;
+    this.flare = false; this.gsCaptured = false;
+    if (!a.onGround) { this.latArmed = null; this.vertArmed = null; }
+    // SRS: V2 + 10 on the takeoff, at least the current speed on a go-around
+    const v = this.vSpeeds();
+    this.srsSpd = a.onGround ? v.v2 + 10 : Math.max(v.vref + 10, Math.min(a.ias / KT, v.v2 + 25));
+    this.flcGamma = a.onGround ? 8 : Math.max(3, Math.atan2(a.vs, a.tas) * RAD);
   }
   toggleAthr() {
     if (!this.hasAthr) { this.msg = 'A/THR: 이 기종에는 오토스로틀이 없습니다'; return; }
-    if (this.athr === 'OFF') { this.athr = 'SPEED'; this.athrPid.reset(); this.thrCmd = this.ac.engineCmd[0]?.throttle ?? 0; }
+    if (this.athr === 'OFF') { this.athr = 'SPEED'; this.athrPid.reset(); this.thrCmd = this.thrI = this.ac.engineCmd[0]?.throttle ?? 0; }
     else this.athr = 'OFF';
   }
 
@@ -187,6 +271,11 @@ export class FCS {
     if (this.ap && !a.isRotor && (Math.abs(pin.pitch) > 0.5 || Math.abs(pin.roll) > 0.5)) { this.engageAp(false); this.msg = 'AUTOPILOT DISCONNECT (조종간 개입)'; }
 
     if (this.plan.approach) this.ils = ilsDeviation(this.plan.approach, a, a.alt); else this.ils = null;
+    // takeoff thrust on the roll with the flight director on: TOGA / SRS guidance (and A/THR armed, Airbus style)
+    if (!a.isRotor && a.onGround && this.fd && this.vert === 'OFF' && a.gs > 5 * KT && (a.engineCmd[0]?.throttle ?? 0) > 0.85 && a.def.cat !== 'glider') {
+      this.toga();
+      if (this.hasAthr) this.athr = 'TOGA';
+    }
 
     if (a.isRotor) { this.heli(dt, pin); this.autothrottle(dt); return; }
 
@@ -349,7 +438,7 @@ export class FCS {
     const altFt = a.alt / FT;
     const vsFpm = a.vs / FPM;
     // altitude capture
-    if (this.vert === 'VS' || this.vert === 'FLC' || this.vert === 'PIT' || this.vert === 'VNAV') {
+    if (this.vert === 'VS' || this.vert === 'FLC' || this.vert === 'PIT') {
       const err = this.selAlt - altFt;
       const band = Math.max(150, Math.abs(vsFpm) * 0.25);
       const moving = (err > 0 && vsFpm > 100) || (err < 0 && vsFpm < -100);
@@ -376,8 +465,80 @@ export class FCS {
     }
     if ((this.vert === 'FLARE' || this.vert === 'GS') && a.onGround && this.lat === 'LOC') { this.lat = 'ROLLOUT'; }
     if (this.vert === 'TOGA' && !a.onGround && this.lat === 'RWY' && ra > 30) this.lat = 'HDG';
+    // armed NAV engages above 50 ft after takeoff
+    if (this.latArmed === 'NAV' && !a.onGround && ra > 50 && this.plan.to) { this.lat = 'NAV'; this.latArmed = null; }
+    // thrust reduction / acceleration altitude: SRS -> climb (VNAV if armed, else FLC / ALT)
+    const thrRed = a.def.cat === 'ga' || a.def.cat === 'vintage' ? 800 : 1500;
+    if (this.vert === 'TOGA' && !a.onGround && ra > thrRed && a.vs > 0) {
+      if (this.athr === 'TOGA') this.athr = 'SPEED';
+      this.thrI = this.ac.engineCmd[0]?.throttle ?? this.thrI;
+      if (this.vertArmed === 'VNAV' && this.plan.to) { this.vertArmed = null; this.vert = 'VNAV'; this.vnavSub = 'SPD'; this.flcGamma = Math.atan2(a.vs, a.tas) * RAD; }
+      else if (this.selAlt > altFt + 300) { this.vert = 'FLC'; this.flcGamma = Math.atan2(a.vs, a.tas) * RAD; }
+      else { this.vert = 'ALT*'; this.altHold = Math.max(this.selAlt, Math.round(altFt / 100) * 100); }
+    }
+    if (this.vert === 'VNAV') this.vnavLogic();
     // NAV sequencing
-    if (this.lat === 'NAV') this.sequence();
+    // keep sequencing the flight plan on the approach too (distance to go, managed speeds)
+    if (this.lat === 'NAV' || this.lat === 'LOC') this.sequence();
+  }
+
+  /**
+   * VNAV: climb at managed speed to the lower of the cruise level and the MCP altitude; level there; from the
+   * top of descent fly a 3° path down to the next altitude constraint (or 3000 ft above the destination ~12 NM out),
+   * never below the MCP altitude. Like Boeing VNAV the MCP altitude is a hard limit in both directions.
+   */
+  private vnavLogic() {
+    const a = this.ac, p = this.plan, altFt = a.alt / FT, vsFpm = a.vs / FPM;
+    const destElev = p.approach ? p.approach.elev / FT : 0;
+    const remaining = p.remainingNm(a);
+    // next constraint below us along the route, else the approach gate
+    let endFt = destElev + 3000, endNm = Math.max(0, remaining - 12);
+    let acc = p.to ? distance(a, p.to) / NM : 0;
+    for (let i = p.active; i < p.wps.length; i++) {
+      const w = p.wps[i];
+      if (i > p.active) acc += distance(p.wps[i - 1], w) / NM;
+      if (w.alt !== undefined && w.alt < altFt - 200 && w.alt > endFt - 1) { endFt = w.alt; endNm = acc; break; }
+    }
+    const crz = Math.min(p.cruiseFt, this.ac.def.v.ceil);
+    const ceilingFt = Math.min(crz, this.selAlt);
+    const floorFt = Math.max(this.selAlt, endFt);
+    // 3° path: 318 ft per NM, plus room to slow to 250 kt before 10 000 ft
+    const decel = altFt > 11000 ? 5 : 0;
+    const todDist = endNm - (altFt - endFt) / 318 - decel;
+    this.todNm = altFt > endFt + 500 ? todDist : null;
+    const band = Math.max(150, Math.abs(vsFpm) * 0.2);
+    if (this.vnavPhase !== 'DES' && todDist <= 0 && altFt > endFt + 500 && remaining > 0) this.vnavPhase = 'DES';
+    if (this.vnavPhase === 'DES') {
+      if (altFt > this.selAlt + 200 || this.vnavSub === 'PTH') {
+        // fly the path; level at the MCP altitude / constraint (VNAV ALT) and continue when it is lowered
+        const pathFt = endFt + Math.max(0, endNm - decel) * 318 + (altFt > 10000 ? decel * 318 : 0);
+        const pathVs = -(a.gs / KT) * 101.27 * Math.tan(3 * DEG);
+        this.vnavVs = clamp(pathVs + clamp((pathFt - altFt) * 1.5, -1500, 1200), -4500, 0);
+        if (altFt - floorFt < band && vsFpm < -100) { this.vnavSub = 'ALT'; this.altHold = floorFt; }
+        else if (this.vnavSub !== 'ALT' || altFt > this.altHold + 250) this.vnavSub = 'PTH';
+        // too fast on the path with the thrust at idle: ask for speed brakes
+        if (this.vnavSub === 'PTH' && a.ias / KT > this.targetIas() + 12 && (a.engineCmd[0]?.throttle ?? 1) < 0.05 && performance.now() - this.msgT > 15000) {
+          this.msgT = performance.now(); this.msg = 'VNAV: MORE DRAG — 스피드 브레이크를 펴세요';
+        }
+      }
+      if (this.vnavSub === 'ALT' && this.selAlt < this.altHold - 200 && altFt > endFt + 200) this.vnavSub = 'PTH';
+      // at the top of descent with the MCP altitude still at cruise: remind the pilot (VNAV never busts the MCP altitude)
+      if (this.vnavSub === 'ALT' && altFt > endFt + 1000 && this.selAlt >= altFt - 200 && performance.now() - this.msgT > 30000) {
+        this.msgT = performance.now(); this.msg = 'T/D — 강하 시작점: MCP 고도를 낮추면 VNAV가 강하합니다';
+      }
+      return;
+    }
+    // climb / cruise
+    const holding = this.vnavSub === 'ALT' && Math.abs(altFt - this.altHold) < 600 && this.altHold >= ceilingFt - 50;
+    if (!holding && altFt < ceilingFt - band) { this.vnavPhase = 'CLB'; if (this.vnavSub !== 'SPD') this.flcGamma = Math.atan2(a.vs, a.tas) * RAD; this.vnavSub = 'SPD'; }
+    else {
+      // level at the ceiling; if the MCP altitude was set below us before the top of descent, level off where we are
+      if (this.vnavSub !== 'ALT') this.altHold = ceilingFt < altFt - 300 ? Math.round(altFt / 100) * 100 : ceilingFt;
+      this.vnavSub = 'ALT';
+      if (ceilingFt >= crz - 100) this.vnavPhase = 'CRZ';
+    }
+    // MCP altitude raised while levelled below the cruise level: climb on
+    if (this.vnavSub === 'ALT' && ceilingFt > this.altHold + 200) { this.vnavSub = 'SPD'; this.flcGamma = Math.atan2(a.vs, a.tas) * RAD; }
   }
 
   private sequence() {
@@ -392,6 +553,10 @@ export class FCS {
       const d = Math.abs(wrap180(bearing(to, next) - bearing(from, to)));
       const R = (a.gs * a.gs) / (G0 * Math.tan(this.bankLimit * DEG));
       lead = Math.max(0.2 * NM, R * Math.tan((d * DEG) / 2));
+    }
+    // managed approach: arm LOC/GS on the final legs (inside 25 NM of the runway)
+    if (p.approach && !this.latArmed && !this.vertArmed && this.lat === 'NAV' && (this.ap || this.fd) && p.remainingNm(a) < 25 && !a.onGround) {
+      this.latArmed = 'LOC'; this.vertArmed = 'GS'; this.ilsTuned = true; this.msg = `APPR ARMED — ${p.approach.airport} ${p.approach.runway} ILS`;
     }
     const past = alongTrack(from, to, a) > distance(from, to);
     if (dist < lead || past) {
@@ -458,10 +623,19 @@ export class FCS {
       }
       case 'FLC': {
         const climbing = this.selAlt > altFt;
-        const spdErr = a.ias / KT - this.selSpd;
-        this.flcGamma += clamp(spdErr * 0.08 + this.accel * 0.25, -1.5, 1.5) * dt;
-        this.flcGamma = climbing ? clamp(this.flcGamma, 0.5, 18) : clamp(this.flcGamma, -12, -0.5);
-        pitch = gammaToPitch(this.flcGamma);
+        pitch = this.speedOnPitch(dt, this.targetIas(), climbing);
+        break;
+      }
+      case 'VNAV': {
+        if (this.vnavSub === 'SPD') pitch = this.speedOnPitch(dt, this.targetIas(), true);
+        else if (this.vnavSub === 'PTH') {
+          const g = Math.asin(clamp((this.vnavVs * FPM) / V, -0.5, 0.5)) * RAD;
+          pitch = gammaToPitch(g) + this.vsPid.update(this.vnavVs - a.vs / FPM, a.vs / FPM, dt);
+        } else {
+          const vsTgt = clamp((this.altHold - altFt) * 3, -2000, 2000);
+          const g = Math.asin(clamp((vsTgt * FPM) / V, -0.5, 0.5)) * RAD;
+          pitch = gammaToPitch(g) + this.vsPid.update(vsTgt - a.vs / FPM, a.vs / FPM, dt);
+        }
         break;
       }
       case 'GS': {
@@ -480,11 +654,28 @@ export class FCS {
         pitch = gammaToPitch(g) + 0.5 + this.vsPid.update((vsTgt - a.vs) / FPM, a.vs / FPM, dt);
         break;
       }
-      case 'TOGA': pitch = this.isJet ? 15 : 10; if (a.def.cockpit === 'fighter') pitch = 12; break;
+      case 'TOGA': {
+        const ground = this.isJet ? 15 : 10;
+        if (a.onGround || (a.agl - a.aero.cgHeight) / FT < 20) { pitch = a.def.cockpit === 'fighter' ? 12 : ground; this.flcGamma = Math.max(this.flcGamma, 6); break; }
+        // SRS: hold the takeoff / go-around speed with pitch, never below a positive climb
+        pitch = Math.min(this.speedOnPitch(dt, Math.max(this.srsSpd || this.vSpeeds().v2 + 10, this.vls() + 5), true, 2), 18);
+        break;
+      }
     }
     if (a.onGround && this.lat === 'ROLLOUT') pitch = 0;
+    // close to the ground: gentle banks only (10° below 100 ft, 15° below 400 ft)
+    const raFt = (a.agl - a.aero.cgHeight) / FT;
+    if (this.lat !== 'LOC' && this.lat !== 'ROLLOUT' && raFt < 400) roll = clamp(roll, raFt < 100 ? -10 : -15, raFt < 100 ? 10 : 15);
     pitch = clamp(pitch, -15, 25);
     return { pitch, roll };
+  }
+  /** Speed-on-elevator (FLC / VNAV SPD / SRS): adjust the flight path angle until the speed is right. */
+  private speedOnPitch(dt: number, tgtKt: number, climbing: boolean, minClimb = 0.5) {
+    const a = this.ac;
+    const spdErr = a.ias / KT - tgtKt;
+    this.flcGamma += clamp(spdErr * 0.08 + this.accel * 0.3, -1.5, 1.5) * dt;
+    this.flcGamma = climbing ? clamp(this.flcGamma, minClimb, 18) : clamp(this.flcGamma, -12, -0.5);
+    return this.flcGamma + this.alphaEst();
   }
   private aEst = 0;
   private alphaEst() {
@@ -505,29 +696,42 @@ export class FCS {
     const clb = a.def.eng.t === 'fan' ? 0.9 : 0.95;
     let mode: AthrMode = this.athr;
     if (this.alphaFloor && a.def.fbw === 'airbus') mode = 'A.FLOOR';
-    if (this.vert === 'FLC' && this.ap) mode = this.selAlt > a.alt / FT ? 'THR CLB' : 'IDLE';
+    if (this.ap || this.fd) {
+      if (this.vert === 'FLC') mode = this.selAlt > a.alt / FT ? 'THR CLB' : 'IDLE';
+      if (this.vert === 'VNAV' && this.vnavSub === 'SPD') mode = 'THR CLB';
+    }
     if (this.vert === 'FLARE' && (a.agl - a.aero.cgHeight) / FT < 30) mode = 'RETARD';
     if (a.onGround && this.lat === 'ROLLOUT') mode = 'RETARD';
     if (this.athr === 'TOGA') mode = 'TOGA';
+    // flight-path feed-forward: a change in climb angle needs W·Δsinγ more (or less) thrust
+    const sinG = clamp(a.vs / Math.max(a.tas, 30), -0.3, 0.3);
+    const dSin = sinG - this.lastSinG;
+    this.lastSinG = sinG;
     let target: number;
     switch (mode) {
       case 'THR CLB': target = clb; break;
       case 'IDLE': case 'RETARD': target = 0; break;
       case 'TOGA': case 'A.FLOOR': target = maxThr; break;
       default: {
-        const tgtSpd = this.spdIsMach ? (this.selMach * a.air.a / (a.tas / Math.max(a.ias, 1))) / KT : this.selSpd;
-        const err = tgtSpd - iasKt;
-        const rate = clamp(err * 0.02 - this.accel * 0.12, -0.25, 0.25);
-        target = clamp(this.thrCmd + rate * dt * 4, 0, maxThr * 0.98);
+        // speed mode: commanded acceleration from the speed error, PI on the acceleration error
+        const tgt = this.targetIas();
+        const err = tgt - iasKt;
+        const aCmd = clamp(err * 0.18, -1.2, 1.2);              // kt/s
+        const aErr = aCmd - this.accel;
+        const Tmax = Math.max(1, maxThrust(a.def, a.air, Math.max(a.tas, 30), a.mach) * Math.max(1, a.def.eng.n));
+        const W = a.mass * G0;
+        this.thrI = clamp(this.thrI + aErr * 0.01 * dt + (W * dSin) / Tmax * 0.8, 0, maxThr);
+        target = clamp(this.thrI + aErr * 0.035, 0, maxThr * 0.98);
         this.thrCmd = target;
-        for (const c of a.engineCmd) c.throttle = moveToward(c.throttle, target, dt * 0.3);
+        for (const c of a.engineCmd) c.throttle = moveToward(c.throttle, target, dt * 0.25);
         if (this.athr !== 'TOGA') this.athr = 'SPEED';
-        this.athrDisplay = this.spdIsMach ? 'MACH' : 'SPEED';
+        this.athrDisplay = this.spdManaged ? (this.spdIsMach || (this.vert === 'VNAV' && a.alt / FT > 26000) ? 'MACH' : 'SPEED') : this.spdIsMach ? 'MACH' : 'SPEED';
         return;
       }
     }
     this.athrDisplay = mode;
     this.thrCmd = target;
+    this.thrI = a.engineCmd[0]?.throttle ?? target;   // bumpless back into SPEED
     for (const c of a.engineCmd) c.throttle = moveToward(c.throttle, target, dt * (mode === 'RETARD' ? 0.25 : 0.2));
   }
   athrDisplay: string = 'OFF';
