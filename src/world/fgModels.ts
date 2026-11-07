@@ -26,6 +26,8 @@ export interface FgModel {
 
 /** Livery ids of real FlightGear liveries are stored with this prefix (procedural ones have none). */
 export const FG_PREFIX = 'fg:';
+/** Our own airline livery on the procedural model, chosen for a type that also has a real model. */
+export const PR_PREFIX = 'pr:';
 /** Extra web aircraft ids that may use a model converted for another flight model. */
 const ALIAS: Record<string, string> = {};
 

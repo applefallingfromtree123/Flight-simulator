@@ -8,7 +8,7 @@ import { Controls, type AxisBind } from '../input/controls.ts';
 import type { ImagerySource } from '../world/scene.ts';
 import { KEY_HELP } from './help.ts';
 import { liveriesFor, getLivery } from '../world/liveries.ts';
-import { FG_PREFIX, fgLivery, fgModelFor } from '../world/fgModels.ts';
+import { FG_PREFIX, PR_PREFIX, fgLivery, fgModelFor } from '../world/fgModels.ts';
 import { SPECS } from '../sim/specs.ts';
 import { ACTIVITIES, loadBest, type Activity } from '../career/activities.ts';
 import { airportLayout, type Stand } from '../world/gates.ts';
@@ -233,7 +233,9 @@ export class Menu {
     const a = getAircraft(this.cfg.aircraftId);
     const fgm = fgModelFor(a.id);
     const liv = getLivery(a, this.cfg.livery?.[a.id]);
-    const livName = fgm ? `${fgLivery(fgm, this.cfg.livery?.[a.id]).name} (실제 도색)` : `${liv.name} (${liv.reg})`;
+    const stored = this.cfg.livery?.[a.id];
+    const painted = stored?.startsWith(PR_PREFIX) ? getLivery(a, stored.slice(PR_PREFIX.length)) : null;
+    const livName = painted ? `${painted.name} (간략 모델)` : fgm ? `${fgLivery(fgm, stored).name} (실제 도색)` : `${liv.name} (${liv.reg})`;
     const x = SPECS[a.id];
     this.el.querySelector<HTMLElement>('#acSpec')!.innerHTML = `
       <div class="spec-row"><div><h2>${a.name}</h2><div class="mfr">${a.mfr} · ${CATEGORY_LABEL[a.cat]} · ICAO ${a.icao} · 도색: ${livName}</div></div>
@@ -259,11 +261,17 @@ export class Menu {
     const fgm = fgModelFor(a.id);
     const livs = liveriesFor(a);
     const cur = getLivery(a, this.cfg.livery?.[a.id]).id;
-    const fgCur = fgm ? fgLivery(fgm, this.cfg.livery?.[a.id]).id : '';
+    const storedLiv = this.cfg.livery?.[a.id];
+    const prCur = storedLiv?.startsWith(PR_PREFIX) ? storedLiv.slice(PR_PREFIX.length) : '';
+    const fgCur = fgm && !prCur ? fgLivery(fgm, storedLiv).id : '';
+    const swatch = (l: typeof livs[number]) => `<span class="sw"><i style="background:${l.body}"></i><i style="background:${(l.bands ?? [])[0]?.c ?? l.body}"></i><i style="background:${l.tail.bg}"></i><i style="background:${l.engine}"></i></span>`;
     const livHtml = fgm
       ? `<div class="sec"><h3>도색 (리버리) — FlightGear 실제 도색</h3><div class="liv-list">
         ${fgm.liveries.map(l => `<button class="liv ${l.id === fgCur ? 'sel' : ''}" data-liv="${FG_PREFIX}${l.id}"><span class="ln">${l.name}</span><span class="dim">${l.id}</span></button>`).join('')}
-        </div><p class="note">3D 모델과 도색: ${fgm.source} (${fgm.license}) — FlightGear 커뮤니티 제작 실제 기체 모델·항공사 텍스처.</p></div>`
+        </div><p class="note">3D 모델과 도색: ${fgm.source} (${fgm.license}) — FlightGear 커뮤니티 제작 실제 기체 모델·항공사 텍스처.</p></div>
+        ${livs.length > 1 ? `<div class="sec"><h3>항공사 도색 — 간략 3D 모델 (${livs.length}종)</h3><div class="liv-list">
+          ${livs.map(l => `<button class="liv ${l.id === prCur ? 'sel' : ''}" data-liv="${PR_PREFIX}${l.id}">${swatch(l)}<span class="ln">${l.name}</span><span class="dim">${l.reg}</span></button>`).join('')}
+        </div><p class="note">실제 도색 목록에 없는 항공사는 여기서 고르세요. 이 경우 실제 3D 모델 대신 SkyLine의 간략 모델에 그 항공사 색을 칠해 보여 줍니다 (조종석은 기본 3D 조종석).</p></div>` : ''}`
       : `<div class="sec"><h3>도색 (리버리)</h3><div class="liv-list">
         ${livs.map(l => `<button class="liv ${l.id === cur ? 'sel' : ''}" data-liv="${l.id}">
           <span class="sw"><i style="background:${l.body}"></i><i style="background:${(l.bands ?? [])[0]?.c ?? l.body}"></i><i style="background:${l.tail.bg}"></i><i style="background:${l.engine}"></i></span>

@@ -8,7 +8,7 @@ import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
 import { getLivery } from './liveries.ts';
-import { fgLivery, fgModelFor, type FgLiveAnim, type FgModel } from './fgModels.ts';
+import { PR_PREFIX, fgLivery, fgModelFor, type FgLiveAnim, type FgModel } from './fgModels.ts';
 import { Cockpit3D, type FgScreenFace } from './cockpit3d.ts';
 import { geoidHeight } from './geoid.ts';
 import { ElevationService } from './terrain.ts';
@@ -184,6 +184,8 @@ export class World {
   }
 
   private tier = 1;
+  /** Sunlight on the clouds (1 day .. ~0.06 night). */
+  private cloudDim = 1;
   get qualityTier() { return this.tier; }
   /**
    * Graphics quality: render resolution (retina on high/ultra), HDR with PBR-neutral tone mapping,
@@ -492,7 +494,9 @@ export class World {
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
     if (this.fg?.interior) this.scene.primitives.remove(this.fg.interior);
     this.fg = null;
-    const fg = fgModelFor(ac.def.id);
+    // 'pr:<id>': the user picked one of our airline liveries for a type that also has a real (FlightGear) model
+    const painted = liveryId?.startsWith(PR_PREFIX) ? liveryId.slice(PR_PREFIX.length) : null;
+    const fg = painted ? undefined : fgModelFor(ac.def.id);
     if (fg) {
       try {
         const liv = fgLivery(fg, liveryId);
@@ -507,7 +511,7 @@ export class World {
       }
     }
     if (!this.model) {
-      const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, liveryId), this.opts.quality === 'low' ? 0.5 : 1);
+      const { glb, nodes } = await buildAircraftGlb(ac.def, ac.aero, getLivery(ac.def, painted ?? liveryId), this.opts.quality === 'low' ? 0.5 : 1);
       const url = URL.createObjectURL(new Blob([glb], { type: 'model/gltf-binary' }));
       this.model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, color: Cesium.Color.WHITE });
       this.modelNodes = nodes;
@@ -802,6 +806,13 @@ export class World {
       const near = this.db.nearest(ac, 6, 30000);
       for (const { apt } of near) for (const rw of apt.runways) if (rw.hard && (rw.lighted || apt.size >= 2)) this.buildRunwayLights(rw);
     }
+    // clouds are lit by the sun: dim them at dusk and night (they glowed white in a black sky)
+    const dim = Math.max(0.06, 1 - night * 0.94);
+    if (Math.abs(dim - this.cloudDim) > 0.02) {
+      const k = dim / this.cloudDim;
+      this.cloudDim = dim;
+      for (let i = 0; i < this.clouds.length; i++) { const c = this.clouds.get(i) as unknown as { brightness: number }; c.brightness *= k; }
+    }
     // lights glow at night on high/ultra
     this.scene.postProcessStages.bloom.enabled = this.tier >= 2 && night > 0.45;
     this.scene.postProcessStages.exposure = 1.5 - 0.6 * night;
@@ -907,7 +918,7 @@ export class World {
           scale: new Cesium.Cartesian2(size * 1.6, hgt * 1.3),
           maximumSize: new Cesium.Cartesian3(size, hgt * 0.8, size * 0.8),
           slice: stratus ? 0.36 : 0.3 + rnd() * 0.3,
-          brightness: w.precip >= 2 ? 0.55 : stratus ? 0.8 : 1.0,
+          brightness: (w.precip >= 2 ? 0.55 : stratus ? 0.8 : 1.0) * this.cloudDim,
         });
       }
     }

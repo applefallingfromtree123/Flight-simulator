@@ -198,9 +198,13 @@ function house(ac: AircraftDef): Livery {
 }
 
 /** All schemes for a type (first = default). */
+/** Airlines (not manufacturers / air forces) any airliner can be painted in. */
+const AIRLINES = ['kal', 'aar', 'jja', 'jal', 'ana', 'dlh', 'ezy', 'baw', 'aca', 'aal', 'dal', 'ual', 'swa', 'ryr', 'afr', 'sia', 'cpa', 'qfa', 'uae', 'qtr', 'klm', 'ces', 'azu', 'anz', 'fdx'];
 export function liveriesFor(ac: AircraftDef): Livery[] {
   const out: Livery[] = [];
-  for (const key of BY_TYPE[ac.id] ?? []) {
+  const keys = [...(BY_TYPE[ac.id] ?? [])];
+  if (ac.cat === 'airliner' || ac.cat === 'widebody' || ac.cat === 'regional') for (const k of AIRLINES) if (!keys.includes(k)) keys.push(k);
+  for (const key of keys) {
     const a = A[key] ?? S[key];
     if (!a) continue;
     out.push({ ...a, id: key, reg: S[key] ? (key.startsWith('rokaf') ? `${10 + (hash(ac.id) % 89)}-${String(hash(key) % 1000).padStart(3, '0')}` : `${String(hash(ac.id + key) % 100000).padStart(5, '0')}`) : regFor(key, ac) });
