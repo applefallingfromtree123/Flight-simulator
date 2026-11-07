@@ -1026,6 +1026,20 @@ export class World {
   }
   framesOk = 0;
   errorsTotal = 0;
+  /** Optional layers switched off by error recovery (shown in diagnostics). */
+  disabledLayers: string[] = [];
+  private suspects: { name: string; off: () => void }[] = [
+    { name: '렌즈 플레어', off: () => this.effects.disable('flare') },
+    { name: '공항 바닥 표시', off: () => this.scenery.disable('ground') },
+    { name: '공항 건물·탑승교', off: () => this.scenery.disable('model') },
+    { name: '비·눈 효과', off: () => this.effects.disable('precip') },
+    { name: '비행운', off: () => this.effects.disable('trails') },
+    { name: '탑승교·계단차 모델', off: () => { this.groundModelsOff = true; for (const o of this.groundObjects) (o as { show?: boolean }).show = false; } },
+    { name: '그림자', off: () => { this.viewer.shadows = false; } },
+    { name: 'HDR', off: () => { this.scene.highDynamicRange = false; } },
+  ];
+  /** Ground equipment hidden by error recovery. */
+  groundModelsOff = false;
   /** distinct errors seen (most recent last), for the on-screen diagnostics panel */
   errorLog: { msg: string; stack: string; where: string; count: number; first: number; last: number }[] = [];
   onPersistentError: (msg: string) => void = () => {};
@@ -1049,6 +1063,15 @@ export class World {
     if (/was destroyed/i.test(msg) && entry.count < 20) return;
     this.errTimes = this.errTimes.filter(t => now - t < 10000);
     this.errTimes.push(now);
+    // newest optional layers first, one at a time, so the culprit is found and everything else keeps working
+    if (this.errTimes.length >= 3 && this.suspects.length) {
+      const s = this.suspects.shift()!;
+      this.errTimes = [];
+      try { s.off(); } catch { /* ignore */ }
+      this.disabledLayers.push(s.name);
+      this.onRenderIssue(`렌더링 오류 복구: ${s.name} 끔 (${msg.slice(0, 80)})`, false);
+      return;
+    }
     // progressively disable optional features if the error keeps coming back
     if (this.errTimes.length >= 3 && this.degraded < 3) {
       this.degraded++;
@@ -1089,6 +1112,7 @@ export class World {
       'Clock': `${t.toISOString()} · animate ${this.viewer.clock.shouldAnimate}`,
       'Globe': `show ${this.scene.globe.show} · tilesLoaded ${this.scene.globe.tilesLoaded} · drawn ${(this.scene.globe as unknown as { _surface: { _tilesToRender: unknown[] } })._surface._tilesToRender.length} · terrain fetch ${this.elevation.inflight}`,
       'Imagery': `${this.lastImagery} · layers ${layers.join(', ')}`,
+      '꺼진 레이어': this.disabledLayers.join(', ') || '없음',
       '3D Tiles': this.tileset ? 'on' : 'off',
       'Sky': `atmosphere ${!!this.scene.skyAtmosphere?.show} · skybox ${!!this.scene.skyBox?.show}`,
     };

@@ -18,6 +18,13 @@ interface Jetway { stand: Stand; rot: LatLon; node: string }
 
 export class AirportScenery {
   enabled = true;
+  /** Parts switched off after render errors. */
+  off = { ground: false, model: false };
+  disable(k: 'ground' | 'model') {
+    this.off[k] = true;
+    if (k === 'ground' && this.ground) this.ground.show = false;
+    if (k === 'model' && this.model) this.model.show = false;
+  }
   private icao = '';
   private gen = 0;
   private model: Cesium.Model | null = null;
@@ -226,6 +233,7 @@ export class AirportScenery {
     polys(quads, '#f0bf1e');
     polys(white, '#e8e8e2');
     polys(red, '#c8302c');
+    col.show = !this.off.ground;
     this.ground = this.scene.groundPrimitives.add(col);
     this.scene.groundPrimitives.lowerToBottom(col);  // runways (and their markings) stay on top
   }
@@ -308,6 +316,7 @@ export class AirportScenery {
     const url = URL.createObjectURL(new Blob([writeGlb(nodes)], { type: 'model/gltf-binary' }));
     const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
     if (gen !== this.gen) { model.destroy(); URL.revokeObjectURL(url); return; }
+    model.show = !this.off.model;
     this.model = this.scene.primitives.add(model);
     this.offset = NaN;
     this.night = null;  // apply day/night on the next update

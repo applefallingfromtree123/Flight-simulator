@@ -81,6 +81,14 @@ export class Effects {
   private t0 = performance.now();
   private trailT = 0;
   private u = { time: 0, intensity: 0, snow: 0, cockpit: 0, airspeed: 0 };
+  /** Switched off after render errors (see World.handleRenderError). */
+  off = { precip: false, flare: false, trails: false };
+  disable(k: 'precip' | 'flare' | 'trails') {
+    this.off[k] = true;
+    if (k === 'precip') this.precip.enabled = false;
+    if (k === 'flare' && this.flare) this.flare.enabled = false;
+    if (k === 'trails') { this.trails.removeAll(); this.trails.show = false; this.engineTrails = []; }
+  }
 
   constructor(scene: Cesium.Scene) {
     const u = this.u;
@@ -107,13 +115,13 @@ export class Effects {
     const u = this.u;
     u.time = (performance.now() - this.t0) / 1000;
     const on = opts.precipLevel > 0 && opts.belowTops;
-    this.precip.enabled = on && opts.tier >= 1;
+    this.precip.enabled = on && opts.tier >= 1 && !this.off.precip;
     u.intensity = Math.min(1, 0.35 + opts.precipLevel * 0.22);
     u.snow = ac.air.T < 272 ? 1 : 0;
     u.cockpit = opts.cockpit ? 1 : 0;
     u.airspeed = Math.min(1, ac.tas / (160 * KT));
-    if (this.flare) this.flare.enabled = opts.tier >= 2 && opts.night < 0.3 && opts.inCloud < 0.3 && !on;
-    this.updateContrails(ac, acMatrix, opts.dt);
+    if (this.flare) this.flare.enabled = opts.tier >= 2 && opts.night < 0.3 && opts.inCloud < 0.3 && !on && !this.off.flare;
+    if (!this.off.trails) this.updateContrails(ac, acMatrix, opts.dt);
   }
 
   /** Condensation trails: jets above ~FL260 in air colder than -40 °C leave a white trail that slowly fades. */

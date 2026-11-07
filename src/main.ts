@@ -289,7 +289,7 @@ class App {
       $('errBanner').classList.remove('hidden');
     };
     this.hud = new HUD($('hudLayer'));
-    this.ground = new GroundServices(this.world.scene, objs => { this.world.groundObjects = objs; });
+    this.ground = new GroundServices(this.world.scene, objs => { this.world.groundObjects = objs; if (this.world.groundModelsOff) for (const o of objs) (o as { show?: boolean }).show = false; });
     this.world.guideOn = !!s.routeGuide;
     this.world.scenery.enabled = s.airportScenery !== false;
     this.efb = new Efb($('efbwin'), {
