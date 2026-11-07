@@ -212,7 +212,7 @@ export class AirportScenery {
     } else {
       // nothing mapped: belts of trees around the airfield (never on the runways, water or pavement)
       for (let c = 0; c < 26; c++) {
-        const ang = rnd() * Math.PI * 2, dist = 900 + rnd() * 2400, rad = 60 + rnd() * 160;
+        const ang = rnd() * Math.PI * 2, dist = (apt.size === 3 ? 2800 : apt.size === 2 ? 1500 : 800) + rnd() * 2400, rad = 60 + rnd() * 160;  // clear of terminals
         const cx = Math.cos(ang) * dist, cy = Math.sin(ang) * dist;
         const n = Math.round((rad * rad) / 150);
         for (let i = 0; i < n; i++) { const a2 = rnd() * Math.PI * 2, r2 = Math.sqrt(rnd()) * rad; pts.push([cx + Math.cos(a2) * r2, cy + Math.sin(a2) * r2]); }
