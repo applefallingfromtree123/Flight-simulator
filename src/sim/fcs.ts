@@ -132,7 +132,7 @@ export class FCS {
 
   // ───────────────────────── speeds ─────────────────────────
   /** Knots IAS per unit Mach here and now. */
-  private iasPerMach() { const a = this.ac; return a.air.a * Math.max(a.ias, 1) / Math.max(a.tas, 1) / KT; }
+  private iasPerMach() { const a = this.ac; const r = a.tas > 30 ? a.ias / a.tas : Math.sqrt(Math.max(0.05, a.air.sigma)); return a.air.a * r / KT; }
   private flapFrac() { const n = this.ac.aero.flaps.length; return n > 1 ? this.ac.flapIdx / (n - 1) : 0; }
   /** Lowest selectable speed for the configuration (1.23 Vs at this weight). */
   vls() {

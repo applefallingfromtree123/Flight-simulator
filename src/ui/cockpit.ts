@@ -67,7 +67,7 @@ export class Cockpit {
     const knobs: Record<string, { get: () => string; step: (d: number, big: boolean) => void; set?: (v: number) => void }> = {
       spd: { get: () => f.spdManaged ? `(${Math.round(f.targetIas())})` : f.spdIsMach ? f.selMach.toFixed(2) : String(f.selSpd), step: (d, big) => {
         // turning the speed knob takes over from managed speed (selected speed starts from the managed one)
-        if (f.spdManaged) { f.spdManaged = false; f.selSpd = Math.round(f.targetIas()); } if (f.spdIsMach) f.selMach = clamp(+(f.selMach + d * (big ? 0.05 : 0.01)).toFixed(2), 0.3, 2.2); else f.selSpd = clamp(f.selSpd + d * (big ? 10 : 1), 30, 700); }, set: v => { f.spdManaged = false; if (v < 3) { f.spdIsMach = true; f.selMach = v; } else { f.spdIsMach = false; f.selSpd = Math.round(v); } } },
+        if (f.spdManaged) { const t = Math.round(f.targetIas()); f.spdManaged = false; f.spdIsMach = false; f.selSpd = t; } if (f.spdIsMach) f.selMach = clamp(+(f.selMach + d * (big ? 0.05 : 0.01)).toFixed(2), 0.3, 2.2); else f.selSpd = clamp(f.selSpd + d * (big ? 10 : 1), 30, 700); }, set: v => { f.spdManaged = false; if (v < 3) { f.spdIsMach = true; f.selMach = v; } else { f.spdIsMach = false; f.selSpd = Math.round(v); } } },
       hdg: { get: () => String(f.selHdg).padStart(3, '0'), step: (d, big) => { f.selHdg = Math.round(wrap360(f.selHdg + d * (big ? 10 : 1))) || 360; }, set: v => { f.selHdg = Math.round(wrap360(v)) || 360; } },
       alt: { get: () => String(f.selAlt), step: (d, big) => { f.selAlt = clamp(f.selAlt + d * (big ? 1000 : 100), 0, 60000); }, set: v => { f.selAlt = clamp(Math.round(v / 100) * 100, 0, 60000); } },
       vs: { get: () => (f.selVs > 0 ? '+' : '') + f.selVs, step: (d, big) => { f.selVs = clamp(f.selVs + d * (big ? 500 : 100), -8000, 8000); if (f.vert !== 'VS' && f.ap && !heli) f.setVert('VS'); }, set: v => { f.selVs = clamp(Math.round(v / 100) * 100, -8000, 8000); } },
@@ -108,7 +108,12 @@ export class Cockpit {
     document.getElementById('mwarn')!.onclick = document.getElementById('mcaut')!.onclick = () => this.sys.ackMaster();
     this.knobs = knobs;
   }
-  private knobs: Record<string, { get: () => string }> = {};
+  private knobs: Record<string, { get: () => string; step: (d: number, big: boolean) => void; set?: (v: number) => void }> = {};
+  /** MCP knobs for the clickable 3D cockpit (same behaviour as the panel's). */
+  knob(id: string, dir: number, big = false) { this.knobs[id]?.step(dir, big); this.refreshMcp(); }
+  knobSet(id: string, v: number) { this.knobs[id]?.set?.(v); this.refreshMcp(); }
+  knobValue(id: string) { return this.knobs[id]?.get() ?? ''; }
+  press(act: string) { this.act(act); this.refreshMcp(); }
 
   refreshMcp() {
     for (const [id, el] of Object.entries(this.mcpEls)) { const t = this.knobs[id].get(); if (el.textContent !== t) el.textContent = t; }

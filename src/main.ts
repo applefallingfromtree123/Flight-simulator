@@ -15,6 +15,7 @@ import { Controls } from './input/controls.ts';
 import { Sound } from './audio/sound.ts';
 import { Menu, type FlightConfig } from './ui/menu.ts';
 import { Cockpit } from './ui/cockpit.ts';
+import { CockpitClick } from './ui/cockpitClick.ts';
 import { HUD } from './avionics/hud.ts';
 import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
@@ -62,6 +63,8 @@ class App {
   // flight
   ac: Aircraft | null = null;
   fcs!: FCS; sys!: Systems; cockpit!: Cockpit; av!: AvData;
+  private ckClick = new CockpitClick(() => this.cockpit ?? null, () => this.fcs ?? null, () => this.sound.chime([1800], 0.025));
+  private tapStart: { x: number; y: number; t: number } | null = null;
   cfg: FlightConfig | null = null;
   weather!: WeatherState;
   flying = false; paused = false; rateIdx = 2;
@@ -289,6 +292,7 @@ class App {
       $('errBanner').classList.remove('hidden');
     };
     this.hud = new HUD($('hudLayer'));
+    this.world.effects.onThunder = d => this.sound.thunder(d);
     this.ground = new GroundServices(this.world.scene, objs => { this.world.groundObjects = objs; if (this.world.groundModelsOff) for (const o of objs) (o as { show?: boolean }).show = false; });
     this.world.guideOn = !!s.routeGuide;
     this.world.scenery.enabled = s.airportScenery !== false;
@@ -298,6 +302,8 @@ class App {
       equipment: () => this.ground.kind, setEquipment: k => this.setEquipment(k), pushback: () => { if (!this.push.on) { this.push.done = false; this.startPushback(); } },
       refuel: kg => { if (this.ac) { this.ac.fuel = kg; toast(`급유 완료: ${Math.round(kg).toLocaleString()} kg`); } },
       guide: () => this.world.guideOn, setGuide: on => { this.world.guideOn = on; this.menu.settings.routeGuide = on; this.menu.saveSettings(); },
+      graphics: () => ({ quality: this.menu.settings.quality, shadows: this.menu.settings.shadows }),
+      setGraphics: (q, sh) => { const st = this.menu.settings; st.quality = q; st.shadows = sh; this.menu.saveSettings(); this.menu.onGraphics(st); toast(`그래픽: ${({ low: '낮음', medium: '중간', high: '높음', ultra: '울트라' })[q]}${sh ? ' · 그림자' : ''}`); },
       scenery: () => this.world.scenery.enabled, setScenery: on => { this.world.scenery.enabled = on; this.menu.settings.airportScenery = on; this.menu.saveSettings(); },
       cruiseFt: () => this.cfg?.cruiseFt ?? 35000,
       runwayLen: (apt, arr) => { if (!apt || !this.cfg) return 0; const id = arr ? this.cfg.arrRwy : this.cfg.depRwy; const e = runwayEnds(apt).find(r => r.end.ident === id) ?? [...runwayEnds(apt)].sort((a, b) => b.rw.length - a.rw.length)[0]; return e ? e.rw.length : 0; },
@@ -326,6 +332,11 @@ class App {
     this.menu.onHome = home => { if (!this.flying) this.map.setActive(!home); };
     this.menu.onResume = () => this.resume();
     this.menu.onDiag = () => this.toggleDiag();
+    this.menu.onGraphics = st => {
+      this.sound.volume = st.volume;
+      this.world.opts = { ...this.world.opts, ...st };
+      this.world.applyGraphics(st.quality, st.shadows);
+    };
     this.menu.onSettings = st => {
       this.sound.volume = st.volume;
       this.world.opts = { ...this.world.opts, ...st };
@@ -661,7 +672,7 @@ class App {
       case 'vs': f.setVert('VS'); break;
       case 'flc': f.setVert('FLC'); break;
       case 'vnav': f.setVert('VNAV'); if (f.msg) break; toast(f.vert === 'VNAV' ? 'VNAV — 비행계획 고도·속도로 상승/순항/강하' : f.vertArmed === 'VNAV' ? 'VNAV 준비 (이륙 후 감속 고도에서 연결)' : 'VNAV 해제'); break;
-      case 'spdmng': f.spdManaged = !f.spdManaged; if (!f.spdManaged) f.selSpd = Math.round(f.targetIas()); toast(f.spdManaged ? '속도 관리 모드 (FMS 속도)' : '선택 속도 모드'); break;
+      case 'spdmng': { const t = Math.round(f.targetIas()); f.spdManaged = !f.spdManaged; if (!f.spdManaged) { f.spdIsMach = false; f.selSpd = t; } } toast(f.spdManaged ? '속도 관리 모드 (FMS 속도)' : '선택 속도 모드'); break;
       case 'toga': f.toga(); if (f.hasAthr) for (const c of ac.engineCmd) c.throttle = ac.def.eng.ab ? 0.95 : 1; break;
       case 'spdmach': f.spdIsMach = !f.spdIsMach; if (f.spdIsMach) f.selMach = Math.round(ac.mach * 100) / 100; else f.selSpd = Math.round(ac.ias / KT); break;
       case 'pause': this.paused = !this.paused; break;
@@ -780,7 +791,24 @@ class App {
     // mouse look / orbit
     const el = $('world');
     el.addEventListener('contextmenu', e => e.preventDefault());
-    el.addEventListener('pointerdown', e => { if (this.world.view !== 'free') this.dragging = { x: e.clientX, y: e.clientY, btn: e.button }; });
+    el.addEventListener('pointerdown', e => { this.tapStart = { x: e.clientX, y: e.clientY, t: performance.now() }; if (this.world.view !== 'free') this.dragging = { x: e.clientX, y: e.clientY, btn: e.button }; });
+    // a short tap (not a head-look drag) in the cockpit: press what is under it
+    el.addEventListener('pointerup', e => {
+      const s = this.tapStart;
+      this.tapStart = null;
+      if (!s || !this.flying || this.world.view !== 'cockpit' || e.button > 0) return;
+      if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 8 || performance.now() - s.t > 500) return;
+      const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      // fingers are big and digit windows small: look a little around the tap for a knob window
+      let hit = this.world.cockpitHit(x, y);
+      if (!hit || hit.kind !== 'group') {
+        for (const [dx, dy] of [[14, 0], [-14, 0], [0, 12], [0, -12], [26, 0], [-26, 0], [0, 22], [0, -22]]) {
+          const h = this.world.cockpitHit(x + dx, y + dy);
+          if (h && h.kind === 'group') { hit = h; break; }
+        }
+      }
+      this.ckClick.tap(hit, e.clientX, e.clientY);
+    });
     window.addEventListener('pointerup', () => { this.dragging = null; });
     window.addEventListener('pointercancel', () => { this.dragging = null; });
     window.addEventListener('pointermove', e => {
@@ -795,6 +823,10 @@ class App {
     el.addEventListener('wheel', e => {
       if (this.world.view === 'free') return;
       const w = this.world;
+      if (w.view === 'cockpit' && this.flying) {
+        const r = el.getBoundingClientRect();
+        if (this.ckClick.wheel(w.cockpitHit(e.clientX - r.left, e.clientY - r.top), e.deltaY < 0, e.shiftKey)) return;
+      }
       if (w.view === 'chase') w.chase.dist = clamp(w.chase.dist * (e.deltaY > 0 ? 1.1 : 0.9), 0.3, 12);
       else w.head.zoom = clamp(w.head.zoom * (e.deltaY > 0 ? 0.9 : 1.1), 0.6, 8);
     }, { passive: true });
@@ -927,6 +959,8 @@ class App {
     const night = w.nightFactor(ac.lat, ac.lon);
     const eyeAlt = w.view === 'cockpit' || w.view === 'cockpit-hud' ? ac.alt : w.scene.camera.positionCartographic.height - w.geoidOffset;
     w.updateAirportLights(ac, night, { lat: ac.lat, lon: ac.lon, alt: ac.alt });
+    w.runways.setWet(this.weather.precip > 0);
+    w.scenery.wind = { dir: this.weather.windDir, spd: this.weather.windSpd, gust: this.weather.gust };
     this.wxT -= dtReal;
     if (this.wxT <= 0) { this.wxT = 2; w.updateWeather(this.weather, ac); }
     // weather effects
@@ -936,6 +970,12 @@ class App {
     // animated rain / snow (shader) on medium+; the old CSS streaks only on low quality
     const precipOn = !!this.weather.precip && eyeAlt < topCloud;
     $('rainfx').style.opacity = String(precipOn && w.qualityTier < 1 ? 0.25 + 0.2 * this.weather.precip : 0);
+    // downwash on water / dust, and lightning in thunderstorms (heavy rain under convective cloud)
+    const gs0 = w.elevation.ground(ac.lat, ac.lon);
+    const sea = gs0.water || gs0.h < 1.5;   // terrain data has bathymetry / no-data at sea: the surface is sea level
+    w.effects.updateWash(ac, { h: sea ? Math.max(0, gs0.h) : gs0.h, water: sea, offset: w.geoidOffset }, dtReal);
+    const storm = this.weather.precip >= 3 || (this.weather.precip >= 2 && this.weather.clouds.some(c => c.top - c.base > 5000)) ? Math.min(1, this.weather.precip / 3) : 0;
+    w.effects.updateLightning(storm, dtReal);
     w.effects.update(ac, w.acMatrix, { precipLevel: this.weather.precip, belowTops: eyeAlt < topCloud, cockpit: w.view === 'cockpit' || w.view === 'cockpit-hud', tier: w.qualityTier, night, inCloud: cloud, dt: dtReal });
     const g = ac.nz;
     $('blackout').style.opacity = String(clamp((g - 6.5) / 3, 0, 0.9) + clamp((-g - 2.5) / 2, 0, 0.6));

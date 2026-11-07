@@ -33,6 +33,13 @@ export class RunwayRenderer {
     Cesium.GroundPrimitive.initializeTerrainHeights().then(() => { this.drapeReady = true; if (this.drape) this.rebuild(); }).catch(() => {});
   }
 
+  /** Rain makes the runway darker (wet asphalt) and the paint duller. */
+  private wet = false;
+  setWet(on: boolean) {
+    if (on === this.wet) return;
+    this.wet = on;
+    this.rebuild();
+  }
   setDrape(on: boolean) {
     if (on === this.drape) return;
     this.drape = on;
@@ -86,8 +93,8 @@ export class RunwayRenderer {
       });
       instances.push(new Cesium.GeometryInstance({ geometry, id, attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor(Cesium.Color.fromCssColorString(color)) } }));
     };
-    mk(asphalt, '#3f4245', 'rwy-asphalt');
-    mk(paint, '#e9ebe6', 'rwy-paint');
+    mk(asphalt, this.wet ? '#232628' : '#3f4245', 'rwy-asphalt');
+    mk(paint, this.wet ? '#c4c7c2' : '#e9ebe6', 'rwy-paint');
     if (!instances.length) return;
     this.prim = this.scene.primitives.add(new Cesium.Primitive({ show: this.show,
       geometryInstances: instances,
@@ -115,8 +122,8 @@ export class RunwayRenderer {
       });
       this.draped.push(this.scene.groundPrimitives.add(g));
     };
-    add(asphalt, '#2f3235');
-    add(paint, '#f2f3ee');
+    add(asphalt, this.wet ? '#1d2022' : '#2f3235');
+    add(paint, this.wet ? '#c9cbc6' : '#f2f3ee');
   }
 
   /** Emit triangles (or, when draping, quads) for one runway. */

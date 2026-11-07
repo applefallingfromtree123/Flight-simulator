@@ -143,7 +143,9 @@ function generated(apt: Airport): AirportLayout {
 
 // ───────────── airport scenery (buildings, aprons, taxiways, roads) from OpenStreetMap ─────────────
 export interface OsmWay { pts: LatLon[]; tags: Record<string, string> }
-export interface SceneryData { buildings: OsmWay[]; aprons: OsmWay[]; taxiways: OsmWay[]; roads: OsmWay[]; parking: OsmWay[]; holds: LatLon[]; towers: OsmWay[] }
+export interface SceneryData { buildings: OsmWay[]; aprons: OsmWay[]; taxiways: OsmWay[]; roads: OsmWay[]; parking: OsmWay[]; holds: LatLon[]; towers: OsmWay[];
+  /** Woods and forests, tree rows and single trees (for the 3D trees). */
+  forests?: OsmWay[]; treeRows?: OsmWay[]; trees?: LatLon[] }
 
 const sceneryCache = new Map<string, Promise<SceneryData | null>>();
 /** Buildings, aprons, taxiways and roads of the airport (null when OpenStreetMap can't be reached). */
@@ -159,7 +161,8 @@ async function fetchScenery(apt: Airport): Promise<SceneryData> {
   const roads = 'motorway|motorway_link|trunk|trunk_link|primary|primary_link|secondary|secondary_link|tertiary|tertiary_link|unclassified|residential|service';
   const q = `[out:json][timeout:25];(way["aeroway"="aerodrome"](${bb});relation["aeroway"="aerodrome"](${bb}););map_to_area->.ar;(` +
     `node["aeroway"~"^(holding_position|control_tower)$"](${bb});way["aeroway"~"^(taxiway|taxilane|apron|terminal|hangar|control_tower)$"](${bb});` +
-    `way["building"](area.ar);way["highway"~"^(${roads})$"](area.ar);way["amenity"="parking"](area.ar);node["man_made"="tower"]["tower:type"="observation"](area.ar););out geom;`;
+    `way["building"](area.ar);way["highway"~"^(${roads})$"](area.ar);way["amenity"="parking"](area.ar);node["man_made"="tower"]["tower:type"="observation"](area.ar);` +
+    `way["landuse"="forest"](${bb});way["natural"="wood"](${bb});way["natural"="tree_row"](${bb});node["natural"="tree"](${bb}););out geom;`;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 30000);
   try {
@@ -167,7 +170,7 @@ async function fetchScenery(apt: Airport): Promise<SceneryData> {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
     if (!r.ok) throw new Error(`overpass ${r.status}`);
     const j = await r.json() as { elements: OsmEl[] };
-    const out: SceneryData = { buildings: [], aprons: [], taxiways: [], roads: [], parking: [], holds: [], towers: [] };
+    const out: SceneryData = { buildings: [], aprons: [], taxiways: [], roads: [], parking: [], holds: [], towers: [], forests: [], treeRows: [], trees: [] };
     const seen = new Set<string>();
     for (const e of j.elements as (OsmEl & { id?: number })[]) {
       const t = e.tags ?? {};
@@ -177,12 +180,15 @@ async function fetchScenery(apt: Airport): Promise<SceneryData> {
       if (e.type === 'node') {
         if (e.lat === undefined || e.lon === undefined) continue;
         if (t.aeroway === 'holding_position') out.holds.push({ lat: e.lat, lon: e.lon });
+        else if (t.natural === 'tree') out.trees!.push({ lat: e.lat, lon: e.lon });
         else out.towers.push({ pts: [{ lat: e.lat, lon: e.lon }], tags: t });
         continue;
       }
       const g = e.geometry?.filter(Boolean);
       if (!g || g.length < 2) continue;
       const w: OsmWay = { pts: g, tags: t };
+      if (t.landuse === 'forest' || t.natural === 'wood') { out.forests!.push(w); continue; }
+      if (t.natural === 'tree_row') { out.treeRows!.push(w); continue; }
       if (t.aeroway === 'taxiway' || t.aeroway === 'taxilane') out.taxiways.push(w);
       else if (t.aeroway === 'apron') out.aprons.push(w);
       else if (t.aeroway === 'control_tower') out.towers.push(w);

@@ -612,12 +612,24 @@ export class Menu {
         <div id="axes"></div>
         <div class="field"><label>데드존 <b id="dzV">${Math.round(this.controls.gp.deadzone * 100)}%</b></label><input id="dz" type="range" min="0" max="25" value="${Math.round(this.controls.gp.deadzone * 100)}"></div>
       </div>
-      <button id="saveSet" class="primary" style="width:100%">저장 (일부는 재시작 후 적용)</button>`;
+      <p class="note">그래픽 품질·그림자·음량은 바꾸는 즉시 적용됩니다 (비행 중에는 EFB → 설정에서도 바꿀 수 있습니다).</p>
+      <button id="saveSet" class="primary" style="width:100%">저장 (지도 소스 · 3D 도시 · 키)</button>`;
     const $ = <T extends HTMLElement>(id: string) => el.querySelector<T>('#' + id)!;
     ($('img') as HTMLSelectElement).value = s.imagery;
     ($('q') as HTMLSelectElement).value = s.quality;
     ($('sh') as HTMLSelectElement).value = s.shadows ? '1' : '0';
-    $<HTMLInputElement>('vol').oninput = e => { s.volume = +(e.target as HTMLInputElement).value / 100; $('volV').textContent = Math.round(s.volume * 100) + '%'; };
+    $<HTMLInputElement>('vol').oninput = e => { s.volume = +(e.target as HTMLInputElement).value / 100; $('volV').textContent = Math.round(s.volume * 100) + '%'; save('sky.settings', s); this.onGraphics(s); };
+    // graphics apply live, no save button needed
+    const live = () => {
+      s.quality = ($('q') as HTMLSelectElement).value as never;
+      s.shadows = ($('sh') as HTMLSelectElement).value === '1';
+      s.autoMixture = $<HTMLInputElement>('mix').checked;
+      save('sky.settings', s);
+      this.onGraphics(s);
+    };
+    ($('q') as HTMLSelectElement).onchange = live;
+    ($('sh') as HTMLSelectElement).onchange = live;
+    $<HTMLInputElement>('mix').onchange = live;
     $<HTMLInputElement>('dz').oninput = e => { this.controls.gp.deadzone = +(e.target as HTMLInputElement).value / 100; $('dzV').textContent = (e.target as HTMLInputElement).value + '%'; this.controls.saveGamepad(); };
     const axes = $('axes');
     const names: [keyof typeof this.controls.gp, string][] = [['roll', '롤 (에일러론)'], ['pitch', '피치 (엘리베이터)'], ['yaw', '요 (러더)'], ['throttle', '스로틀 / 콜렉티브'], ['brake', '브레이크']];
@@ -658,6 +670,8 @@ export class Menu {
     };
   }
   onSettings: (s: Settings) => void = () => {};
+  /** Quality / shadows / volume changed: apply at once (no reload of imagery or 3D tiles). */
+  onGraphics: (s: Settings) => void = () => {};
   saveSettings() { save('sky.settings', this.settings); }
   onDiag: () => void = () => {};
 }

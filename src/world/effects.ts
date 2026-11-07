@@ -1,5 +1,6 @@
 // Visual effects layered on the scene: animated rain / snow (streaks outside, drops running over the windshield in
-// the cockpit), a sun lens flare, and contrails behind jet engines in the cold air at altitude.
+// the cockpit), a sun lens flare, contrails behind jet engines in the cold air at altitude, rotor / jet downwash
+// (the water surface pushed down in rings with spray, dust over land) and lightning flashes in thunderstorms.
 import * as Cesium from 'cesium';
 import type { Aircraft } from '../sim/fdm.ts';
 import { FT, KT } from '../core/math.ts';
@@ -73,6 +74,48 @@ void main() {
   out_FragColor = col;
 }`;
 
+/** Water pushed down by the downwash: a darker dimple with rings running outwards (animated). */
+const WASH_MAT = `
+uniform float time;
+uniform float strength;
+uniform float water;
+czm_material czm_getMaterial(czm_materialInput mi) {
+  czm_material m = czm_getDefaultMaterial(mi);
+  vec2 st = mi.st - 0.5;
+  float r = length(st) * 2.0;
+  float rings = 0.5 + 0.5 * sin(r * 46.0 - time * 9.0);
+  float edge = smoothstep(1.0, 0.55, r);
+  float core = smoothstep(0.45, 0.0, r);
+  if (water > 0.5) {
+    m.diffuse = mix(vec3(0.82, 0.88, 0.92), vec3(0.08, 0.14, 0.18), core);
+    m.alpha = strength * edge * (core * 0.45 + rings * 0.3 * smoothstep(0.08, 0.35, r));
+  } else {
+    m.diffuse = vec3(0.62, 0.55, 0.45);
+    m.alpha = strength * edge * (0.12 + rings * 0.12) * smoothstep(0.05, 0.3, r);
+  }
+  return m;
+}`;
+
+const FLASH_FS = /* glsl */ `
+uniform sampler2D colorTexture;
+uniform float flash;
+in vec2 v_textureCoordinates;
+void main() {
+  vec4 c = texture(colorTexture, v_textureCoordinates);
+  out_FragColor = vec4(c.rgb + vec3(0.85, 0.9, 1.0) * flash * (0.35 + 0.65 * dot(c.rgb, vec3(0.33))), c.a);
+}`;
+
+/** Soft round sprite for spray / dust particles. */
+function puffImage(): HTMLCanvasElement {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 64;
+  const g = cv.getContext('2d')!;
+  const gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  gr.addColorStop(0, 'rgba(255,255,255,0.9)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.35)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return cv;
+}
+
 export class Effects {
   private precip: Cesium.PostProcessStage;
   private flare: Cesium.PostProcessStage | null = null;
@@ -82,15 +125,25 @@ export class Effects {
   private trailT = 0;
   private u = { time: 0, intensity: 0, snow: 0, cockpit: 0, airspeed: 0 };
   /** Switched off after render errors (see World.handleRenderError). */
-  off = { precip: false, flare: false, trails: false };
-  disable(k: 'precip' | 'flare' | 'trails') {
+  off = { precip: false, flare: false, trails: false, wash: false, flash: false };
+  private wash: Cesium.Primitive | null = null;
+  private washMat: Cesium.Material | null = null;
+  private spray: Cesium.ParticleSystem | null = null;
+  private flashStage: Cesium.PostProcessStage | null = null;
+  private flashV = 0;
+  private nextFlash = 0;
+  /** Called on a lightning strike with the delay of its thunder (s). */
+  onThunder: (delay: number) => void = () => {};
+  disable(k: 'precip' | 'flare' | 'trails' | 'wash' | 'flash') {
     this.off[k] = true;
+    if (k === 'wash') { if (this.wash) this.wash.show = false; if (this.spray) this.spray.show = false; }
+    if (k === 'flash' && this.flashStage) this.flashStage.enabled = false;
     if (k === 'precip') this.precip.enabled = false;
     if (k === 'flare' && this.flare) this.flare.enabled = false;
     if (k === 'trails') { this.trails.removeAll(); this.trails.show = false; this.engineTrails = []; }
   }
 
-  constructor(scene: Cesium.Scene) {
+  constructor(private scene: Cesium.Scene) {
     const u = this.u;
     this.precip = scene.postProcessStages.add(new Cesium.PostProcessStage({
       name: 'sky_precip', fragmentShader: PRECIP_FS,
@@ -105,6 +158,93 @@ export class Effects {
       this.flare = scene.postProcessStages.add(f) as Cesium.PostProcessStage;
     } catch { this.flare = null; }
     this.trails = scene.primitives.add(new Cesium.PolylineCollection());
+    this.flashStage = scene.postProcessStages.add(new Cesium.PostProcessStage({ name: 'sky_flash', fragmentShader: FLASH_FS, uniforms: { flash: () => this.flashV } })) as Cesium.PostProcessStage;
+    this.flashStage.enabled = false;
+  }
+
+  /**
+   * Downwash: a helicopter hovering low, or any aircraft skimming the surface, pushes the water down in rings and
+   * throws spray (dust over land). @param ground surface under the aircraft (height MSL + geoid offset, water?)
+   */
+  updateWash(ac: Aircraft, ground: { h: number; water: boolean; offset: number }, dt: number) {
+    if (this.off.wash) return;
+    const heli = ac.isRotor;
+    const agl = ac.alt - ground.h;
+    const d = ac.def;
+    const radius = heli ? Math.max(5, (d.b || 10) * 0.5) : Math.max(6, d.b * 0.4);
+    const reach = heli ? radius * 3.2 : 12;
+    const power = heli ? Math.min(1, 0.35 + ac.collective) : Math.min(1, (ac.engineCmd[0]?.throttle ?? 0) + 0.2);
+    let k = agl > 0 && agl < reach ? (1 - agl / reach) * power : 0;
+    if (!heli && ac.onGround) k = 0;               // fixed wing: only when skimming the surface
+    if (!ground.water && !heli) k = 0;             // jet / prop dust on land is too subtle to bother with
+    const pos = Cesium.Cartesian3.fromDegrees(ac.lon, ac.lat, ground.h + ground.offset + 0.25);
+    if (k <= 0.02) {
+      if (this.wash) this.wash.show = false;
+      if (this.spray) this.spray.show = false;
+      return;
+    }
+    const R = radius * (2.2 + (1 - agl / reach) * 1.5);
+    // one unit disc (a quad; the material draws the round shape), moved and scaled every frame — never rebuilt,
+    // so its material is never destroyed and re-used
+    if (!this.wash) {
+      this.washMat = new Cesium.Material({ fabric: { uniforms: { time: 0, strength: 0, water: 1 }, source: WASH_MAT }, translucent: true });
+      const pos4 = new Float64Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]);
+      const geometry = new Cesium.Geometry({
+        attributes: {
+          position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos4 }),
+          st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]) }),
+          normal: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]) }),
+        } as unknown as Cesium.GeometryAttributes,
+        indices: new Uint16Array([0, 1, 2, 0, 2, 3]), primitiveType: Cesium.PrimitiveType.TRIANGLES,
+        boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 1.5),
+      });
+      this.wash = this.scene.primitives.add(new Cesium.Primitive({
+        geometryInstances: new Cesium.GeometryInstance({ geometry }),
+        appearance: new Cesium.MaterialAppearance({ material: this.washMat, translucent: true, flat: true, faceForward: true, closed: false,
+          renderState: { cull: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
+        asynchronous: false, allowPicking: false, compressVertices: false,
+      })) as Cesium.Primitive;
+    }
+    Cesium.Matrix4.multiplyByUniformScale(Cesium.Transforms.eastNorthUpToFixedFrame(pos), R, this.wash.modelMatrix);
+    this.wash!.show = true;
+    const mu = this.washMat!.uniforms as Record<string, number>;
+    mu.time = (performance.now() - this.t0) / 1000; mu.strength = Math.min(1, k * 1.4); mu.water = ground.water ? 1 : 0;
+    // spray / dust particles thrown out from under the aircraft
+    if (!this.spray) {
+      this.spray = this.scene.primitives.add(new Cesium.ParticleSystem({
+        image: puffImage(), sizeInMeters: true, minimumImageSize: new Cesium.Cartesian2(2, 2), maximumImageSize: new Cesium.Cartesian2(5, 5),
+        startScale: 0.8, endScale: 3.2, minimumParticleLife: 1.0, maximumParticleLife: 2.2, minimumSpeed: 5, maximumSpeed: 11,
+        emissionRate: 0, emitter: new Cesium.CircleEmitter(radius * 1.4), lifetime: 16, loop: true,
+        startColor: new Cesium.Color(1, 1, 1, 0.55), endColor: new Cesium.Color(1, 1, 1, 0),
+        updateCallback: (p: Cesium.Particle, dt2: number) => {
+          // gravity, and a push outwards from the centre
+          const up = Cesium.Cartesian3.normalize(p.position, new Cesium.Cartesian3());
+          Cesium.Cartesian3.add(p.velocity, Cesium.Cartesian3.multiplyByScalar(up, -6 * dt2, new Cesium.Cartesian3()), p.velocity);
+        },
+      })) as Cesium.ParticleSystem;
+    }
+    const sp = this.spray!;
+    sp.show = true;
+    sp.modelMatrix = Cesium.Transforms.eastNorthUpToFixedFrame(pos);
+    sp.emissionRate = 30 + 220 * k;
+    const col = ground.water ? new Cesium.Color(0.95, 0.97, 1, 0.5 * k + 0.1) : new Cesium.Color(0.66, 0.58, 0.47, 0.45 * k + 0.1);
+    sp.startColor = col; sp.endColor = col.withAlpha(0);
+  }
+
+  /** Thunderstorm: random lightning flashes (with thunder a few seconds later). */
+  updateLightning(storm: number, dt: number) {
+    if (this.off.flash || !this.flashStage) return;
+    const now = performance.now() / 1000;
+    if (storm > 0 && now > this.nextFlash) {
+      this.nextFlash = now + 5 + Math.random() * (30 / storm);
+      if (this.nextFlash > 0 && Math.random() < 0.85) { this.flashV = 0.9 + Math.random() * 0.8; this.onThunder(1 + Math.random() * 6); }
+    }
+    // a strike flickers: decay with a second pulse
+    if (this.flashV > 0.01) {
+      this.flashV *= Math.exp(-dt * 9);
+      if (Math.random() < dt * 4) this.flashV += 0.4;
+      this.flashStage.enabled = true;
+    } else { this.flashV = 0; this.flashStage.enabled = false; }
   }
 
   /**

@@ -7,7 +7,7 @@ import * as Cesium from 'cesium';
 import earcut from 'earcut';
 import { DEG, R_EARTH, RAD } from '../core/math.ts';
 import { distance, type LatLon } from '../core/geo.ts';
-import type { Airport, AirportDB } from './airports.ts';
+import { runwayInfluence, type Airport, type AirportDB } from './airports.ts';
 import type { ElevationService } from './terrain.ts';
 import { airportLayout, airportScenery, genPlan, type AirportLayout, type OsmWay, type SceneryData, type Stand } from './gates.ts';
 import { Part, box, cyl, writeGlb, type NodeDef, type P3 } from './modelBuilder.ts';
@@ -39,6 +39,18 @@ export class AirportScenery {
   private night: boolean | null = null;
   private waiters = new Map<string, (() => void)[]>();
   private lastCheck = 0;
+  /** Trees (woods from OpenStreetMap, or belts around a generated airport) swaying in the wind. */
+  private trees: Cesium.Model | null = null;
+  private treeShader: Cesium.CustomShader | null = null;
+  /** How many trees were planted, and where one of them is (diagnostics / tests). */
+  treeInfo: { n: number; sample: LatLon } | null = null;
+  /** Tree budget from the graphics quality (0 = none). */
+  treeBudget = 3000;
+  /** Wind for the trees (from the weather): direction it blows FROM (deg), speed and gusts (kt). */
+  wind = { dir: 270, spd: 5, gust: 0 };
+  /** Photoreal tiles have their own (photographed) trees: ours are hidden then. */
+  tilesShown = false;
+  private t0 = performance.now();
   /** Called with the scenery model (excluded when measuring the ground under the aircraft). */
   onModel: (m: Cesium.Model | null) => void = () => {};
 
@@ -63,6 +75,21 @@ export class AirportScenery {
     if (this.model && this.origin && !(Math.abs(geoidOffset - this.offset) <= 0.05)) {
       this.offset = geoidOffset;
       this.placeModel();
+    }
+    if (this.trees) {
+      this.trees.show = !this.tilesShown && !this.off.model && this.treeBudget > 0;
+      if (this.origin && this.trees.show) {
+        Cesium.Matrix4.clone(this.model?.modelMatrix ?? this.trees.modelMatrix, this.trees.modelMatrix);
+        if (!this.model) this.placeOn(this.trees);
+      }
+      const sh = this.treeShader;
+      if (sh) {
+        const ms = this.wind.spd * 0.5144, gust = this.wind.gust * 0.5144;
+        const to = (this.wind.dir + 180) * DEG;     // the way the wind blows
+        sh.setUniform('u_time', (performance.now() - this.t0) / 1000);
+        sh.setUniform('u_wind', Math.min(1.4, 0.04 + ms * 0.035 + gust * 0.02));
+        sh.setUniform('u_dir', new Cesium.Cartesian2(-Math.sin(to), Math.cos(to)));   // glTF frame: x = west, z = north
+      }
     }
     if (this.model?.ready && night !== this.night) {
       this.night = night;
@@ -104,6 +131,7 @@ export class AirportScenery {
   private clear() {
     this.gen++;
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; this.onModel(null); }
+    if (this.trees) { this.scene.primitives.remove(this.trees); this.trees = null; }
     if (this.ground) { this.scene.groundPrimitives.remove(this.ground); this.ground = null; }
     this.jetways = [];
     this.origin = null;
@@ -112,11 +140,15 @@ export class AirportScenery {
 
   private placeModel() {
     if (!this.model || !this.origin) return;
+    this.placeOn(this.model);
+  }
+  private placeOn(model: Cesium.Model) {
+    if (!this.origin) return;
     const o = this.origin;
     const enu = Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(o.lon, o.lat, o.elev + this.offset));
     // model frame (x north, y east, z down) authored like the aircraft: glTF fwd/left/up -> north/west/up
     const rot = Cesium.Matrix4.fromRotationTranslation(Cesium.Matrix3.fromArray([0, 1, 0, -1, 0, 0, 0, 0, 1]), Cesium.Cartesian3.ZERO);
-    Cesium.Matrix4.multiply(enu, rot, this.model.modelMatrix);
+    Cesium.Matrix4.multiply(enu, rot, model.modelMatrix);
   }
 
   private async build(apt: Airport) {
@@ -135,9 +167,112 @@ export class AirportScenery {
     });
     try { this.buildGround(data, layout, frame, apt, this.lastOffset); } catch (e) { console.warn('airport ground', e); }
     try { await this.buildModel(data, layout, frame, apt, gen); } catch (e) { console.warn('airport buildings', e); }
+    try { await this.buildTrees(osm ?? data, data, frame, apt, gen); } catch (e) { console.warn('airport trees', e); }
     const w = this.waiters.get(apt.icao);
     this.waiters.delete(apt.icao);
     w?.forEach(f => f());
+  }
+
+  // ─────────── trees ───────────
+  private async buildTrees(src: SceneryData, d: SceneryData, f: Frame, apt: Airport, gen: number) {
+    const budget = this.treeBudget;
+    if (budget <= 0) return;
+    const pts: XY[] = [];
+    // water: the terrain says so, or the ground is at sea level (tile not loaded yet / coastline)
+    const water = (p: XY) => { const ll = f.ll(p); const g = this.elevation.ground(ll.lat, ll.lon); return g.water || g.h < 1.5; };
+    const rws = apt.runways;
+    const onAirfield = (p: XY) => {
+      const ll = f.ll(p);
+      return rws.some(r => runwayInfluence(r, ll.lat, ll.lon).w > 0.02);
+    };
+    const blocked = [...d.buildings, ...d.aprons, ...d.parking].map(w => f.ring(w.pts)).filter(r => r.length >= 3);
+    const bbox = blocked.map(r => { const xs = r.map(p => p[0]), ys = r.map(p => p[1]); return [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]; });
+    const free = (p: XY) => !blocked.some((r, i) => { const b = bbox[i]; return p[0] > b[0] && p[0] < b[1] && p[1] > b[2] && p[1] < b[3] && inside(r, p); });
+    let seed = Math.abs(hash(apt.lat * 1e5 + apt.lon * 1e3)) % 2147483646 + 1;
+    const rnd = () => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; };
+    const forests = (src.forests ?? []).map(w => f.ring(w.pts)).filter(r => r.length >= 3);
+    if (forests.length || src.treeRows?.length || src.trees?.length) {
+      const total = forests.reduce((s, r) => s + Math.abs(area(r)), 0);
+      const spacing = Math.max(11, Math.sqrt(total / (budget * 0.85)));
+      for (const r of forests) {
+        const xs = r.map(p => p[0]), ys = r.map(p => p[1]);
+        for (let x = Math.min(...xs); x < Math.max(...xs); x += spacing) for (let y = Math.min(...ys); y < Math.max(...ys); y += spacing) {
+          const p: XY = [x + (rnd() - 0.5) * spacing * 0.8, y + (rnd() - 0.5) * spacing * 0.8];
+          if (inside(r, p)) pts.push(p);
+        }
+      }
+      for (const w of src.treeRows ?? []) {
+        const r = w.pts.map(q => f.xy(q));
+        for (let i = 1; i < r.length; i++) {
+          const a = r[i - 1], b = r[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          for (let t = 0; t < l; t += 9) pts.push([a[0] + (b[0] - a[0]) * t / l, a[1] + (b[1] - a[1]) * t / l]);
+        }
+      }
+      for (const t of src.trees ?? []) pts.push(f.xy(t));
+    } else {
+      // nothing mapped: belts of trees around the airfield (never on the runways, water or pavement)
+      for (let c = 0; c < 26; c++) {
+        const ang = rnd() * Math.PI * 2, dist = 900 + rnd() * 2400, rad = 60 + rnd() * 160;
+        const cx = Math.cos(ang) * dist, cy = Math.sin(ang) * dist;
+        const n = Math.round((rad * rad) / 150);
+        for (let i = 0; i < n; i++) { const a2 = rnd() * Math.PI * 2, r2 = Math.sqrt(rnd()) * rad; pts.push([cx + Math.cos(a2) * r2, cy + Math.sin(a2) * r2]); }
+      }
+    }
+    const keep = pts.filter(p => !onAirfield(p) && free(p) && !water(p));
+    if (!keep.length) return;
+    // thin out evenly to the budget
+    const step = Math.max(1, keep.length / budget);
+    const chosen: XY[] = [];
+    for (let i = 0; i < keep.length && chosen.length < budget; i += step) chosen.push(keep[Math.floor(i)]);
+    const trunk = new Part('#5b4632', 0, 0.9), leaves = ['#2f5a2a', '#3a682f', '#47733a', '#556f35'].map(c => new Part(c, 0, 0.85)), fir = new Part('#26462a', 0, 0.85);
+    for (const p of [trunk, fir, ...leaves]) p.tex = 0;   // TEXCOORD_0 carries the sway weight (no texture)
+    for (const p of chosen) {
+      const g = f.groundAt([p]);
+      const h = 7 + rnd() * 10, conifer = rnd() < 0.35, phase = rnd();
+      const zb = -(g - 0.5);
+      const uv = (q: P3): [number, number] => [Math.max(0, Math.min(1, (zb - q[2]) / h)), phase];
+      trunk.uvFn = uv; fir.uvFn = uv;
+      const crown = leaves[Math.floor(rnd() * leaves.length)];
+      crown.uvFn = uv;
+      const at = (z: number): P3 => [p[0], p[1], zb - z];
+      cyl(trunk, at(0), at(h * 0.45), 0.22 + h * 0.012, 0.15, 5, false, false);
+      if (conifer) {
+        cyl(fir, at(h * 0.2), at(h * 0.7), h * 0.2, h * 0.08, 7, true, false);
+        cyl(fir, at(h * 0.55), at(h), h * 0.14, 0, 7, true, false);
+      } else {
+        const R = h * (0.22 + rnd() * 0.08);
+        cyl(crown, at(h * 0.3), at(h * 0.62), R * 0.35, R, 7, true, false);
+        cyl(crown, at(h * 0.62), at(h), R, R * 0.15, 7, false, true);
+      }
+    }
+    const hi = chosen.reduce((b, p) => (f.groundAt([p]) > f.groundAt([b]) ? p : b), chosen[0]);
+    this.treeInfo = { n: chosen.length, sample: f.ll(hi) };
+    const node: NodeDef = { name: 'trees', parts: [trunk, fir, ...leaves].filter(p => p.idx.length) };
+    if (!node.parts.length) return;
+    const url = URL.createObjectURL(new Blob([writeGlb([node])], { type: 'model/gltf-binary' }));
+    this.treeShader = new Cesium.CustomShader({
+      uniforms: {
+        u_time: { type: Cesium.UniformType.FLOAT, value: 0 },
+        u_wind: { type: Cesium.UniformType.FLOAT, value: 0.1 },
+        u_dir: { type: Cesium.UniformType.VEC2, value: new Cesium.Cartesian2(1, 0) },
+      },
+      // sway grows with height (weight²), each tree with its own phase, plus a small circular flutter
+      vertexShaderText: `
+        void vertexMain(VertexInput vsInput, inout czm_modelVertexOutput vsOutput) {
+          vec2 t = vsInput.attributes.texCoord_0;
+          float w = t.x * t.x;
+          float s = u_wind * w;
+          float gust = 0.6 + 0.4 * sin(u_time * 1.25 + t.y * 6.2831) * sin(u_time * 0.37 + t.y * 3.1);
+          vec2 off = u_dir * s * gust + vec2(sin(u_time * 2.3 + t.y * 9.0), cos(u_time * 1.9 + t.y * 7.0)) * s * 0.16;
+          vsOutput.positionMC.x += off.x;
+          vsOutput.positionMC.z += off.y;
+        }`,
+    });
+    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, customShader: this.treeShader });
+    if (gen !== this.gen) { model.destroy(); URL.revokeObjectURL(url); return; }
+    this.trees = this.scene.primitives.add(model);
+    this.placeOn(model);
+    model.readyEvent.addEventListener(() => URL.revokeObjectURL(url));
   }
 
   // ─────────── draped surfaces: aprons, taxiways, markings, roads, car parks ───────────

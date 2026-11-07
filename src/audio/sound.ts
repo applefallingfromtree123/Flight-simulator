@@ -148,6 +148,17 @@ export class Sound {
     const g = ctx.createGain(); g.gain.setValueAtTime(0.9, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
     src.connect(f).connect(g).connect(this.master); src.start(); src.stop(ctx.currentTime + 0.6);
   }
+  /** Rolling thunder: low-passed noise swelling and rumbling away over a few seconds. */
+  thunder(delay: number) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime + delay;
+    const src = ctx.createBufferSource(); src.buffer = this.noiseBuf; src.loop = true;
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.setValueAtTime(220, t0); f.frequency.exponentialRampToValueAtTime(60, t0 + 4);
+    const g = ctx.createGain(); const peak = Math.max(0.15, 0.7 - delay * 0.08);
+    g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(peak, t0 + 0.25);
+    g.gain.exponentialRampToValueAtTime(peak * 0.4, t0 + 1.2); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 4.5);
+    src.connect(f).connect(g).connect(this.master); src.start(t0); src.stop(t0 + 4.6);
+  }
   say(text: string) {
     if (this.muted || !('speechSynthesis' in window)) return;
     const now = performance.now();

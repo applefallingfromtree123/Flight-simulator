@@ -174,6 +174,7 @@ export class World {
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
     this.scenery = new AirportScenery(s, db, this.elevation);
+    this.scenery.treeBudget = [0, 2500, 5000, 9000][this.tier];
     this.effects = new Effects(s);
     this.scenery.onModel = m => { this.sceneryModel = m; };
     this.cockpit3d = new Cockpit3D(s);
@@ -206,6 +207,8 @@ export class World {
     v.shadows = shadows || tier >= 2;
     v.shadowMap.softShadows = tier >= 1;
     v.shadowMap.size = tier >= 3 ? 4096 : 2048;
+    try { s.msaaSamples = tier >= 2 ? 4 : 1; } catch { /* WebGL1: no MSAA */ }
+    if (this.scenery) this.scenery.treeBudget = [0, 2500, 5000, 9000][tier];
     const bloom = s.postProcessStages.bloom;
     bloom.uniforms.contrast = 119;
     bloom.uniforms.brightness = -0.62;
@@ -438,6 +441,41 @@ export class World {
       pts.push(C(approach.thr.lat, approach.thr.lon, approach.elev + 15));
     } else if (last) pts.push(C(last.lat, last.lon, prof(last)));
     if (pts.length > 1) G.add({ positions: pts, width: 7, material: Cesium.Material.fromType('PolylineGlow', { color: Cesium.Color.fromCssColorString('#e45bf2').withAlpha(0.9), glowPower: 0.2 }) });
+  }
+
+  /**
+   * Clickable cockpit: what is under a tap in the cockpit view. The procedural deck's FCU/MCP strip resolves to a
+   * zone (window −/+/value, mode button); a real cockpit's autopilot digit windows, PFD and ND resolve to a group.
+   */
+  cockpitHit(x: number, y: number): { kind: 'fcu'; u: number; v: number } | { kind: 'group'; group: 'spd' | 'hdg' | 'alt' | 'vs' } | { kind: 'pfd' | 'nd' | 'eicas' } | null {
+    if (this.view !== 'cockpit') return null;
+    const pos = new Cesium.Cartesian2(x, y);
+    let picks: { primitive?: unknown; detail?: { node?: { name?: string; node?: { name?: string } } } }[] = [];
+    try { picks = this.scene.drillPick(pos, 4) as typeof picks; } catch { return null; }
+    const ray = this.scene.camera.getPickRay(pos);
+    if (!ray) return null;
+    const inv = Cesium.Matrix4.inverseTransformation(this.acMatrix, new Cesium.Matrix4());
+    const o = Cesium.Matrix4.multiplyByPoint(inv, ray.origin, new Cesium.Cartesian3());
+    const d = Cesium.Matrix4.multiplyByPointAsVector(inv, ray.direction, new Cesium.Cartesian3());
+    Cesium.Cartesian3.normalize(d, d);
+    const groupOf: Record<string, 'spd' | 'hdg' | 'alt' | 'vs'> = { 'ap-spd': 'spd', 'ap-hdg': 'hdg', 'ap-alt': 'alt', 'ap-vs': 'vs' };
+    for (const p of picks) {
+      const scr = this.cockpit3d.hitScreen(p.primitive, { o, d });
+      if (scr) {
+        if (scr.src === 'fcu') return { kind: 'fcu', u: scr.u, v: scr.v };
+        if (scr.src === 'pfd' || scr.src === 'nd' || scr.src === 'eicas') return { kind: scr.src };
+        continue;
+      }
+      // a real cockpit: autopilot digit windows are separate nodes bound to the selected values
+      const fg = this.fg;
+      if (fg && p.primitive === fg.interior) {
+        const name = p.detail?.node?.node?.name ?? p.detail?.node?.name ?? '';
+        const t = (fg.m.texLive ?? []).find(tl => tl.interior && tl.nodes.includes(name));
+        if (t && groupOf[t.prop]) return { kind: 'group', group: groupOf[t.prop] };
+        return null;  // the panel itself: nothing to press there
+      }
+    }
+    return null;
   }
 
   /** Ground equipment (jet bridge, stairs, people) — excluded when measuring the ground. */
@@ -754,6 +792,7 @@ export class World {
     this.runways.offset = this.geoidOffset;
     this.runways.setDrape(!!(this.tileset && this.tileset.show));
     this.runways.update(ac.lat, ac.lon);
+    this.scenery.tilesShown = !!(this.tileset && this.tileset.show);
     this.scenery.update(ac.lat, ac.lon, this.geoidOffset, night > 0.5);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {
@@ -1041,6 +1080,8 @@ export class World {
     { name: '공항 건물·탑승교', off: () => this.scenery.disable('model') },
     { name: '비·눈 효과', off: () => this.effects.disable('precip') },
     { name: '비행운', off: () => this.effects.disable('trails') },
+    { name: '물보라·먼지', off: () => this.effects.disable('wash') },
+    { name: '번개', off: () => this.effects.disable('flash') },
     { name: '탑승교·계단차 모델', off: () => { this.groundModelsOff = true; for (const o of this.groundObjects) (o as { show?: boolean }).show = false; } },
     { name: '그림자', off: () => { this.viewer.shadows = false; } },
     { name: 'HDR', off: () => { this.scene.highDynamicRange = false; } },

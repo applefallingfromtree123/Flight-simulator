@@ -134,6 +134,27 @@ export class Cockpit3D {
     }
   }
 
+  /**
+   * What a picked screen primitive is, and (for flat screens) where on it the ray hit: u 0..1 left->right,
+   * v 0..1 top->bottom (canvas orientation). `rayLocal` is the pick ray in the aircraft model frame (fwd, left, up).
+   */
+  hitScreen(prim: unknown, rayLocal: { o: Cesium.Cartesian3; d: Cesium.Cartesian3 }): { src: Src; u: number; v: number } | null {
+    const s = this.screens.find(x => x.prim === prim);
+    if (!s) return null;
+    const def = s.def;
+    if (def.geom || !def.w) return { src: def.src, u: 0.5, v: 0.5 };
+    const L = (p: P3) => new Cesium.Cartesian3(p[0], -p[1], -p[2]);
+    const c = L(def.c), r = L(def.r), up = L(def.u);
+    const n = Cesium.Cartesian3.cross(r, up, new Cesium.Cartesian3());
+    const den = Cesium.Cartesian3.dot(n, rayLocal.d);
+    if (Math.abs(den) < 1e-6) return null;
+    const t = Cesium.Cartesian3.dot(n, Cesium.Cartesian3.subtract(c, rayLocal.o, new Cesium.Cartesian3())) / den;
+    const hit = Cesium.Cartesian3.add(rayLocal.o, Cesium.Cartesian3.multiplyByScalar(rayLocal.d, t, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+    const rel = Cesium.Cartesian3.subtract(hit, c, new Cesium.Cartesian3());
+    const u = Cesium.Cartesian3.dot(rel, r) / def.w + 0.5, v = 0.5 - Cesium.Cartesian3.dot(rel, up) / def.h;
+    return { src: def.src, u: Math.min(1, Math.max(0, u)), v: Math.min(1, Math.max(0, v)) };
+  }
+
   /** Per frame. `mm` is the aircraft model matrix (same frame as the exterior model). */
   update(ac: Aircraft, av: AvData, mm: Cesium.Matrix4, show: boolean, dt: number, input: { pitch: number; roll: number; throttle: number[]; collective: number }, light = 1) {
     this.visible = show;
@@ -544,33 +565,64 @@ function buildHeli(ac: Aircraft, E: P3) {
 }
 
 // ───────────────────────── textures drawn on canvases ─────────────────────────
+/** FCU / MCP strip layout (1024 x 128 canvas): four value windows with −/+ ends, and a block of mode buttons. */
+export const FCU_GROUPS = ['spd', 'hdg', 'alt', 'vs'] as const;
+export type FcuGroup = typeof FCU_GROUPS[number];
+const FCU_BTNS: { act: string; label: string }[] = [
+  { act: 'ap', label: 'AP' }, { act: 'athr', label: 'A/THR' }, { act: 'nav', label: 'NAV' }, { act: 'vnav', label: 'VNAV' },
+  { act: 'loc', label: 'LOC' }, { act: 'app', label: 'APPR' }, { act: 'flc', label: 'FLC' }, { act: 'fd', label: 'FD' },
+];
+const GW = 150, GX = (i: number) => 10 + i * (GW + 8), BX0 = 650, BW = 90, BH = 52;
+/** What a tap at canvas-normalised (u, v) on the FCU does. */
+export function fcuHit(u: number, v: number): { group: FcuGroup; part: 'label' | 'minus' | 'plus' | 'value' } | { act: string } | null {
+  const x = u * 1024, y = v * 128;
+  for (let i = 0; i < 4; i++) {
+    const x0 = GX(i);
+    if (x < x0 || x > x0 + GW) continue;
+    if (y > 76) return { group: FCU_GROUPS[i], part: 'label' };   // mode button under the window
+    const f = (x - x0) / GW;
+    return { group: FCU_GROUPS[i], part: f < 0.28 ? 'minus' : f > 0.72 ? 'plus' : 'value' };
+  }
+  if (x >= BX0) {
+    const col = Math.min(3, Math.floor((x - BX0) / (BW + 4))), row = y < 64 ? 0 : 1;
+    return { act: FCU_BTNS[row * 4 + col].act };
+  }
+  return null;
+}
 function drawFcu(cv: HTMLCanvasElement, av: AvData, ac: Aircraft) {
   const g = cv.getContext('2d')!;
   const { fcs, sys } = av;
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.fillStyle = '#2d3238'; g.fillRect(0, 0, cv.width, cv.height);
   const on = sys.avionicsPowered;
-  const groups: [string, string][] = [
-    ['SPD', fcs.spdManaged ? '---' : fcs.spdIsMach ? fcs.selMach.toFixed(2) : String(fcs.selSpd)],
-    ['HDG', String(fcs.selHdg).padStart(3, '0')],
-    ['ALT', String(fcs.selAlt)],
-    ['V/S', (fcs.selVs > 0 ? '+' : '') + fcs.selVs],
+  const groups: [string, string, boolean][] = [
+    [fcs.spdManaged ? 'SPD MNG' : fcs.spdIsMach ? 'MACH' : 'SPD', fcs.spdManaged ? String(Math.round(fcs.targetIas())) : fcs.spdIsMach ? fcs.selMach.toFixed(2) : String(fcs.selSpd), fcs.spdManaged],
+    ['HDG', String(fcs.selHdg).padStart(3, '0'), fcs.lat === 'HDG'],
+    ['ALT', String(fcs.selAlt), fcs.vert === 'ALT' || fcs.vert === 'ALT*'],
+    ['V/S', (fcs.selVs > 0 ? '+' : '') + fcs.selVs, fcs.vert === 'VS'],
   ];
-  const gw = 190;
-  groups.forEach(([label, val], i) => {
-    const x = 20 + i * (gw + 12);
-    g.fillStyle = '#c9d1d9'; g.font = `bold 20px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'top';
-    g.fillText(label, x + gw / 2, 6);
-    g.fillStyle = '#050607'; g.fillRect(x, 32, gw, 60);
-    if (on) { g.fillStyle = C.amber; g.font = `bold 38px ${FONT}`; g.textBaseline = 'middle'; g.fillText(val, x + gw / 2, 63); }
+  groups.forEach(([label, val, lit], i) => {
+    const x = GX(i);
+    // value window (tap the ends for −/+, the middle for the pop-up), mode button underneath
+    g.fillStyle = '#050607'; g.fillRect(x, 6, GW, 66);
+    g.fillStyle = '#596069'; g.font = `bold 26px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText('−', x + 16, 39); g.fillText('+', x + GW - 16, 39);
+    if (on) { g.fillStyle = fcs.spdManaged && i === 0 ? C.magenta : C.amber; g.font = `bold 32px ${FONT}`; g.fillText(val, x + GW / 2, 40); }
+    g.fillStyle = lit && on ? '#2f8f5a' : '#3b4148'; g.fillRect(x + 10, 80, GW - 20, 40);
+    g.strokeStyle = '#596069'; g.lineWidth = 2; g.strokeRect(x + 11, 81, GW - 22, 38);
+    g.fillStyle = '#e1e6ea'; g.font = `bold 17px ${FONT}`; g.fillText(label, x + GW / 2, 101);
   });
-  const lights: [string, boolean][] = [['AP', fcs.ap], ['A/THR', fcs.athr !== 'OFF'], ['LOC', fcs.lat === 'LOC' || fcs.latArmed === 'LOC'], ['APPR', fcs.vert === 'GS' || fcs.vertArmed === 'GS']];
-  lights.forEach(([label, lit], i) => {
-    const x = 830 + (i % 2) * 96, y = 14 + Math.floor(i / 2) * 56;
-    g.fillStyle = '#1a1d21'; g.fillRect(x, y, 86, 46);
-    g.fillStyle = '#c9d1d9'; g.font = `bold 17px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
-    g.fillText(label, x + 43, y + 30);
-    if (lit && on) { g.fillStyle = C.green; g.fillRect(x + 18, y + 6, 50, 6); }
+  const lit: Record<string, boolean> = {
+    ap: fcs.ap, athr: fcs.athr !== 'OFF', nav: fcs.lat === 'NAV' || fcs.latArmed === 'NAV', vnav: fcs.vert === 'VNAV' || fcs.vertArmed === 'VNAV',
+    loc: fcs.lat === 'LOC' || fcs.latArmed === 'LOC', app: fcs.vert === 'GS' || fcs.vertArmed === 'GS', flc: fcs.vert === 'FLC', fd: fcs.fd,
+  };
+  FCU_BTNS.forEach((b, i) => {
+    const x = BX0 + (i % 4) * (BW + 4), y = 6 + Math.floor(i / 4) * (BH + 8);
+    g.fillStyle = '#1a1d21'; g.fillRect(x, y, BW, BH);
+    g.strokeStyle = '#4a5058'; g.lineWidth = 2; g.strokeRect(x + 1, y + 1, BW - 2, BH - 2);
+    g.fillStyle = '#d5dbe0'; g.font = `bold 16px ${FONT}`; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(b.label, x + BW / 2, y + 32);
+    if (lit[b.act] && on) { g.fillStyle = C.green; g.fillRect(x + 18, y + 6, BW - 36, 6); }
   });
   void ac;
 }
