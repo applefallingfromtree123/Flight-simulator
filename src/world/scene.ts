@@ -400,14 +400,21 @@ export class World {
     const now = performance.now();
     if (now - this.guideT < 800) return;
     this.guideT = now;
-    G.removeAll();
+    try { G.removeAll(); } catch {
+      // a broken collection would fail every frame: replace it
+      this.scene.primitives.remove(G);
+      this.guide = this.scene.primitives.add(new Cesium.PolylineCollection());
+      return;
+    }
     const off = this.geoidOffset;
     const C = (lat: number, lon: number, h: number) => Cesium.Cartesian3.fromDegrees(lon, lat, h + off);
     if (ac.onGround || ac.agl < 15) {
       if (!taxi) return;
       const gh = (p: { lat: number; lon: number }) => this.elevation.ground(p.lat, p.lon).h + 0.6;
-      const yellow = Cesium.Material.fromType('PolylineGlow', { color: Cesium.Color.fromCssColorString('#ffd23f'), glowPower: 0.25 });
-      for (const w of taxi.ways) if (w.length > 1) G.add({ positions: w.map(p => C(p.lat, p.lon, gh(p))), width: 9, material: yellow });
+      // one material per polyline: a polyline destroys its material when removed, so a shared one would be
+      // destroyed twice on removeAll() (throws half-way and leaves dead polylines that break every frame after)
+      const yellow = () => Cesium.Material.fromType('PolylineGlow', { color: Cesium.Color.fromCssColorString('#ffd23f'), glowPower: 0.25 });
+      for (const w of taxi.ways) if (w.length > 1) G.add({ positions: w.map(p => C(p.lat, p.lon, gh(p))), width: 9, material: yellow() });
       const dash = Cesium.Material.fromType('PolylineDash', { color: Cesium.Color.fromCssColorString('#ffd23f'), dashLength: 24 });
       G.add({ positions: [C(ac.lat, ac.lon, gh(ac)), C(taxi.to.lat, taxi.to.lon, gh(taxi.to))], width: 5, material: dash });
       return;
