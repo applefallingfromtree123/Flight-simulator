@@ -184,6 +184,7 @@ class App {
     const atGate = cfg.start === 'gate';
     this.push = { on: false, dist: 0, done: !atGate };
     this.airlineDone = false;
+    this.sys.sw.seatbelt = true;   // seatbelt sign on for departure; switch it off in cruise to serve the cabin
     const seats = def.seats ?? 0;
     const count = def.cat === 'military' || def.cat === 'glider' ? 0 : cfg.pax ?? (seats > 4 ? Math.round(seats * cfg.payloadPct / 100) : Math.min(seats, 1));
     this.pax = count > 0 ? new Passengers(count, atGate, t => { if (this.menu.settings.volume > 0) speak(t, 'ko-KR', { rate: 1.05 }); toast(`📢 ${t}`); }) : null;
@@ -291,7 +292,8 @@ class App {
     const c = this.pax.comfort;
     const revenue = Math.round(this.pax.count * r.fare * (0.85 + 0.3 * c / 100));
     const bonus = c > 90 ? Math.round(revenue * 0.05) : 0;
-    const profit = revenue + bonus - e.cost;
+    const sales = this.pax.sales;   // duty free / snack cart
+    const profit = revenue + bonus + sales - e.cost;
     al.cash += profit;
     al.rep = Math.max(0, Math.min(100, al.rep + (c - 70) / 15));
     const p = al.fleet.find(x => x.id === r.planeId);
@@ -300,7 +302,7 @@ class App {
     $('resultTitle').textContent = `${callsignOf(al)} 운항 완료`;
     $('resultBody').innerHTML = `<div class="res-pay ${profit >= 0 ? 'ok' : 'bad'}">${profit >= 0 ? '+' : '−'}$${Math.abs(profit).toLocaleString()}</div>
       <table class="spec-t"><tr><td>승객</td><td>${this.pax.count}명</td></tr><tr><td>승객 만족도</td><td>${this.pax.label}</td></tr>
-      <tr><td>운임 수입</td><td>$${revenue.toLocaleString()}${bonus ? ` (+보너스 $${bonus.toLocaleString()})` : ''}</td></tr><tr><td>운항 비용</td><td>$${e.cost.toLocaleString()}</td></tr>
+      <tr><td>운임 수입</td><td>$${revenue.toLocaleString()}${bonus ? ` (+보너스 $${bonus.toLocaleString()})` : ''}</td></tr>${sales ? `<tr><td>기내 판매</td><td>$${sales.toLocaleString()}</td></tr>` : ''}<tr><td>운항 비용</td><td>$${e.cost.toLocaleString()}</td></tr>
       <tr><td>평판</td><td>${Math.round(al.rep)}/100</td></tr>${this.pax.notes.map(n => `<tr><td></td><td>${n}</td></tr>`).join('')}</table>`;
     $('resultCareer').textContent = '항공사 화면으로';
     $('resultwin').classList.remove('hidden');
@@ -372,6 +374,11 @@ class App {
       setGraphics: (q, sh, look) => { const st = this.menu.settings; st.quality = q; st.shadows = sh; st.look = look; this.menu.saveSettings(); this.menu.onGraphics(st); toast(`그래픽: ${({ low: '낮음', medium: '중간', high: '높음', ultra: '울트라' })[q]}${sh ? ' · 그림자' : ''}`); },
       scenery: () => this.world.scenery.enabled, setScenery: on => { this.world.scenery.enabled = on; this.menu.settings.airportScenery = on; this.menu.saveSettings(); },
       cruiseFt: () => this.cfg?.cruiseFt ?? 35000,
+      nearby: (lat, lon, r) => this.db.nearest({ lat, lon }, 40, r).map(n => n.apt),
+      layout: apt => airportLayout(apt),
+      seatbelt: () => this.sys.sw.seatbelt, setSeatbelt: on => { this.sys.sw.seatbelt = on; this.sound.chime([on ? 880 : 660], 0.25); this.cockpit.refreshOverhead(); },
+      action: a => this.action(a),
+      say: t => toast(t),
       runwayLen: (apt, arr) => { if (!apt || !this.cfg) return 0; const id = arr ? this.cfg.arrRwy : this.cfg.depRwy; const e = runwayEnds(apt).find(r => r.end.ident === id) ?? [...runwayEnds(apt)].sort((a, b) => b.rw.length - a.rw.length)[0]; return e ? e.rw.length : 0; },
     });
     this.world.deck3d = s.deck3d;
@@ -981,7 +988,7 @@ class App {
       }
       if (this.careerJob) this.trackJob(dtReal * rate);
       this.updateLiveWeather();
-      if (this.pax) this.pax.update(dtReal * rate, ac, turbulenceAt(this.weather, ac.alt, ac.agl));
+      if (this.pax) { this.pax.seatbelt = s.sw.seatbelt; this.pax.update(dtReal * rate, ac, turbulenceAt(this.weather, ac.alt, ac.agl)); }
       if (this.atc) {
         this.atc.update();
         this.atcT -= dtReal;

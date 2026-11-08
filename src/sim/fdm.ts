@@ -39,6 +39,8 @@ export class Aircraft {
   collective = 0; rotorRpm = 0;        // rotorcraft
   engines: Engine[] = [];
   engineCmd: EngineCmd[] = [];
+  /** Precipitation level (0..3) of the weather: wet runways brake worse. */
+  precip = 0;
   // ── derived outputs ──
   air!: Air;
   vAir: V3 = [0, 0, 0];
@@ -139,6 +141,7 @@ export class Aircraft {
 
     // ── atmosphere & air data ──
     const wx = env.weather;
+    this.precip = wx.precip ?? 0;
     const air = (this.air = atmosphere(this.alt, wx.dT, wx.qnh * 100));
     this.wind = windAt(wx, this.alt, Math.max(0, this.agl - A.cgHeight), env.time);
     const vAirN: V3 = [this.vel[0] - this.wind[0], this.vel[1] - this.wind[1], this.vel[2] - this.wind[2]];
@@ -343,27 +346,39 @@ export class Aircraft {
     F[2] += -Df * sa - Lf * ca;
     F[1] += CY * qS;
 
+    // propeller slipstream: the tail of a single (or the elevator of a twin) sits in the prop wash, so elevator and
+    // rudder bite hard at low speed with power on (actuator disk: q_wash = q + T / A_disk); the swirl yaws it left
+    let blowE = 1, blowR = 1;
+    const propEngines = this.engines.filter(e => e.def.t === 'prop' || e.def.t === 'tprop');
+    if (propEngines.length && def.eng.propD) {
+      const disk = Math.PI * (def.eng.propD / 2) ** 2;
+      const T = propEngines.reduce((s2, e) => s2 + Math.max(0, e.thrust), 0) / propEngines.length;
+      const k = T / disk / Math.max(this.qbar, 60);
+      const single = def.eng.n === 1;
+      blowE = 1 + clamp(k * (single ? 0.75 : 0.3), 0, 3);
+      blowR = 1 + clamp(k * (single ? 0.7 : 0.05), 0, 3);
+    }
     // moments
     const deEff = this.de * A.maxDe + this.trim * A.trimRange;
     const ctrlFade = 1 - 0.5 * stall;
     const CmRest = A.Cm0 + A.Cma * alpha + A.Cmq * qh + dCmf - 0.25 * stall * Math.sign(alpha) * 0.4
       + 0.02 * this.gearPos * (def.gear.retract ? 1 : 0) - 0.01 * Math.min(this.spoilerPos, 1);
-    const Cm = CmRest + A.Cmde * deEff * ctrlFade;
+    const Cm = CmRest + A.Cmde * deEff * ctrlFade + A.Cmde * this.de * A.maxDe * ctrlFade * (blowE - 1) * 0.5;
     // wing drop at stall (asymmetric, depends on yaw/sideslip)
     const wingDrop = stall * clamp(rh * 20 + beta * 4 + Math.sin(this.time * 1.7) * 0.3, -1, 1) * 0.06;
     const ClRest = A.Clb * beta + A.Clp * (1 - 0.8 * stall) * ph + A.Clr * rh + wingDrop + A.Cldr * this.dr * A.maxDr;
     const Cl = ClRest + A.Clda * this.da * A.maxDa * ctrlFade;
     const CnRest = A.Cnb * beta + A.Cnr * rh + A.Cnp * ph + A.Cnda * this.da * A.maxDa;
-    const Cn = CnRest + A.Cndr * this.dr * A.maxDr;
+    const Cn = CnRest + A.Cndr * this.dr * A.maxDr * blowR;
     M[0] += Cl * qS * b;
     M[1] += Cm * qS * c;
     M[2] += Cn * qS * b;
 
-    this.ctrlM = [A.Clda * this.da * A.maxDa * ctrlFade * qS * b, A.Cmde * this.de * A.maxDe * ctrlFade * qS * c, A.Cndr * this.dr * A.maxDr * qS * b];
+    this.ctrlM = [A.Clda * this.da * A.maxDa * ctrlFade * qS * b, A.Cmde * this.de * A.maxDe * ctrlFade * qS * c * (1 + (blowE - 1) * 0.5), A.Cndr * this.dr * A.maxDr * qS * b * blowR];
     this.ctrlPower = {
-      pitch: A.Cmde * A.maxDe * qS * c * ctrlFade,
+      pitch: A.Cmde * A.maxDe * qS * c * ctrlFade * (1 + (blowE - 1) * 0.5),
       roll: A.Clda * A.maxDa * qS * b * ctrlFade,
-      yaw: A.Cndr * A.maxDr * qS * b,
+      yaw: A.Cndr * A.maxDr * qS * b * blowR,
     };
     void air; void vb;
   }
@@ -466,7 +481,9 @@ export class Aircraft {
   private groundContact(dt: number, F: V3, M: V3, m: number) {
     const A = this.aero;
     const gh = this.groundH;
-    const wet = this.onRunway ? 0.75 : 0.55;
+    // braking grip: dry runway / grass, less on a wet runway (rain), much less in heavy rain (standing water)
+    const rain = this.precip;
+    const wet = (this.onRunway ? 0.75 : 0.55) * (rain >= 3 ? 0.55 : rain === 2 ? 0.7 : rain === 1 ? 0.85 : 1);
     this.onGround = false;
     this.wow = [];
     this.gearCompression = [];
