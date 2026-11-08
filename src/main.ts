@@ -1044,7 +1044,7 @@ class App {
     w.applyShake(dtReal);
     const night = w.nightFactor(ac.lat, ac.lon);
     const eyeAlt = w.view === 'cockpit' || w.view === 'cockpit-hud' ? ac.alt : w.scene.camera.positionCartographic.height - w.geoidOffset;
-    w.updateAirportLights(ac, night, { lat: ac.lat, lon: ac.lon, alt: ac.alt });
+    w.updateAirportLights(ac, night, { lat: ac.lat, lon: ac.lon, alt: ac.alt }, this.weather.visibility);
     w.runways.setWet(this.weather.precip > 0);
     w.scenery.wind = { dir: this.weather.windDir, spd: this.weather.windSpd, gust: this.weather.gust };
     w.updateVolClouds(this.weather);

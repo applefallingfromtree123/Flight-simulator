@@ -3,7 +3,7 @@
 import * as Cesium from 'cesium';
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import { DEG, RAD, clamp, qMul, qFromEuler, qRot, qToEuler, type Q, type V3 } from '../core/math.ts';
-import { destination, distance } from '../core/geo.ts';
+import { destination, distance, bearing } from '../core/geo.ts';
 import type { Aircraft } from '../sim/fdm.ts';
 import type { WeatherState } from '../sim/atmosphere.ts';
 import { buildAircraftGlb, type ModelNodes } from './modelBuilder.ts';
@@ -105,8 +105,9 @@ export class World {
   private fg: { m: FgModel; off: Cesium.Cartesian3; angle: number[]; placed: boolean; interior: Cesium.Model | null; interiorPlaced: boolean } | null = null;
   private lights: Cesium.PointPrimitiveCollection;
   private acLights: Cesium.PointPrimitive[] = [];
-  private rwyLights: Cesium.PointPrimitiveCollection;
-  private papi: { p: Cesium.PointPrimitive; pos: { lat: number; lon: number; h: number }; thr: number; end: RunwayEnd }[] = [];
+  private rwyLights: Cesium.BillboardCollection;
+  private taxiLights: Cesium.BillboardCollection;
+  private papi: { p: Cesium.Billboard; pos: { lat: number; lon: number; h: number }; thr: number; end: RunwayEnd }[] = [];
   private rwyLightsAt: { lat: number; lon: number } | null = null;
   private clouds: Cesium.CloudCollection;
   private cloudsAt: { lat: number; lon: number; key: string } | null = null;
@@ -173,7 +174,8 @@ export class World {
     const cam = s.camera;
     (cam.frustum as Cesium.PerspectiveFrustum).near = 0.3;
     this.lights = s.primitives.add(new Cesium.PointPrimitiveCollection());
-    this.rwyLights = s.primitives.add(new Cesium.PointPrimitiveCollection());
+    this.rwyLights = s.primitives.add(new Cesium.BillboardCollection({ scene: s }));
+    this.taxiLights = s.primitives.add(new Cesium.BillboardCollection({ scene: s }));
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
@@ -387,7 +389,7 @@ export class World {
     const now = performance.now();
     if (now - this.geoidT < 700 || ac.agl > 60) return;
     this.geoidT = now;
-    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, this.sceneryModel, ...this.groundObjects].filter(Boolean) as object[];
+    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, this.taxiLights, this.sceneryModel, ...this.groundObjects].filter(Boolean) as object[];
     const N = geoidHeight(ac.lat, ac.lon);
     const res: number[] = [];
     // centre and four points a wingspan-ish away: the lower ones are the ground, not a roof or a jet bridge
@@ -945,8 +947,28 @@ export class World {
     });
   }
 
-  // ───────────────────────── airport lighting (edge, centreline, approach, PAPI) ─────────────────────────
-  updateAirportLights(ac: Aircraft, night: number, eye: { lat: number; lon: number; alt: number }) {
+  // ───────────────────────── airport lighting (edge, centreline, TDZ, approach, rabbit, REIL, PAPI, taxiways) ─────────────────────────
+  private glowImg: HTMLCanvasElement | null = null;
+  private glow() {
+    if (this.glowImg) return this.glowImg;
+    const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+    const g = cv.getContext('2d')!, gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.16, 'rgba(255,255,255,1)'); gr.addColorStop(0.32, 'rgba(255,255,255,0.45)');
+    gr.addColorStop(0.6, 'rgba(255,255,255,0.12)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    return (this.glowImg = cv);
+  }
+  /** Sequenced flashers (the "rabbit") and REIL strobes; threshold/end lights that are green from the approach, red from the runway. */
+  private flashers: { b: Cesium.Billboard; end: RunwayEnd; k: number; n: number; reil: boolean }[] = [];
+  private dirLights: { b: Cesium.Billboard; lat: number; lon: number; hdg: number }[] = [];
+  private lightLevel = -1;
+  private taxiGen = -1;
+  private readonly C = {
+    W: Cesium.Color.fromCssColorString('#fff1d0'), Y: Cesium.Color.fromCssColorString('#ffc933'),
+    G: Cesium.Color.fromCssColorString('#3dff6a'), R: Cesium.Color.fromCssColorString('#ff2a2a'),
+    B: Cesium.Color.fromCssColorString('#3d6bff'), S: Cesium.Color.fromCssColorString('#f4f8ff'),
+  };
+  updateAirportLights(ac: Aircraft, night: number, eye: { lat: number; lon: number; alt: number }, visibility = 20000) {
     this.refineGeoid(ac);
     this.runways.offset = this.geoidOffset;
     this.runways.setDrape(!!(this.tileset && this.tileset.show));
@@ -957,9 +979,16 @@ export class World {
     if (moved && this.db.ready) {
       this.rwyLightsAt = { lat: ac.lat, lon: ac.lon };
       this.rwyLights.removeAll();
-      this.papi = [];
+      this.papi = []; this.flashers = []; this.dirLights = []; this.lightLevel = -1;
       const near = this.db.nearest(ac, 6, 30000);
       for (const { apt } of near) for (const rw of apt.runways) if (rw.hard && (rw.lighted || apt.size >= 2)) this.buildRunwayLights(rw);
+    }
+    // taxiway lights (green centre line, blue edges) once the airport scenery knows the taxiways
+    if (this.scenery.taxiGen !== this.taxiGen) {
+      this.taxiGen = this.scenery.taxiGen;
+      this.taxiLights.removeAll();
+      this.buildTaxiLights(this.scenery.taxiLines);
+      this.lightLevel = -1;
     }
     // clouds are lit by the sun: dim them at dusk and night (they glowed white in a black sky)
     const dim = Math.max(0.06, 1 - night * 0.94);
@@ -971,12 +1000,39 @@ export class World {
     // lights glow at night on high/ultra
     this.scene.postProcessStages.bloom.enabled = this.tier >= 2 && night > 0.45;
     this.scene.postProcessStages.exposure = 1.5 - 0.6 * night;
-    const vis = night > 0.05;
-    const scale = 0.5 + night * 0.9;
-    this.rwyLights.show = vis || night > 0;
-    for (let i = 0; i < this.rwyLights.length; i++) {
-      const p = this.rwyLights.get(i);
-      p.pixelSize = (p as unknown as { base: number }).base * scale;
+    // runway lights are on whenever it is dark or the visibility is poor; by day (airports keep the approach
+    // lights and PAPI on) they are smaller and only visible from closer in
+    const lowVis = clamp((8000 - visibility) / 6000, 0, 1);
+    const level = Math.round(Math.max(night, lowVis * 0.8) * 20) / 20;
+    if (level !== this.lightLevel) {
+      this.lightLevel = level;
+      const scale = 0.55 + level * 1.0;
+      const far = 5000 + level * 25000;
+      const tbd = new Cesium.NearFarScalar(far * 0.5, 1, far, 0);
+      const alpha = 0.75 + 0.25 * level;
+      for (const col of [this.rwyLights, this.taxiLights]) {
+        for (let i = 0; i < col.length; i++) {
+          const b = col.get(i) as Cesium.Billboard & { base: number; col: Cesium.Color; day?: boolean };
+          b.width = b.height = b.base * scale * 4;
+          b.translucencyByDistance = tbd;
+          b.color = b.col.withAlpha(alpha);
+          // taxiway lights and plain edge lights stay off in good daylight
+          b.show = level > 0.12 || !!b.day;
+        }
+      }
+    }
+    // threshold / runway-end bars: green seen from the approach, red seen from the runway
+    for (const d of this.dirLights) {
+      const brg = bearing(d, eye), rel = Math.abs(((brg - d.hdg) % 360 + 540) % 360 - 180);
+      (d.b as unknown as { col: Cesium.Color }).col = rel > 90 ? this.C.G : this.C.R;
+      d.b.color = (rel > 90 ? this.C.G : this.C.R).withAlpha(0.75 + 0.25 * level);
+    }
+    // the rabbit: two flashes a second running towards the threshold; REIL: a pair of strobes in step
+    const t = performance.now() / 1000, ph = (t * 2) % 1;
+    for (const f of this.flashers) {
+      const on = f.reil ? ph < 0.06 : Math.abs(ph - f.k / f.n) < 0.035;
+      f.b.show = on;
+      f.b.width = f.b.height = (f.reil ? 34 : 30) * (0.6 + this.lightLevel);
     }
     // PAPI: colour by observer glide angle (white above, red below; 2.5/2.83/3.17/3.5°)
     for (const pa of this.papi) {
@@ -985,53 +1041,88 @@ export class World {
       pa.p.color = ang > pa.thr ? Cesium.Color.WHITE : Cesium.Color.RED;
     }
   }
-  private addLight(lat: number, lon: number, h: number, color: Cesium.Color, size: number) {
-    const p = this.rwyLights.add({
-      position: Cesium.Cartesian3.fromDegrees(lon, lat, h + 0.4 + this.geoidOffset), color, pixelSize: size,
-      scaleByDistance: new Cesium.NearFarScalar(200, 1.6, 12000, 0.35),
+  private addLight(lat: number, lon: number, h: number, color: Cesium.Color, size: number, day = false, col = this.rwyLights) {
+    const b = col.add({
+      image: this.glow(), position: Cesium.Cartesian3.fromDegrees(lon, lat, h + 0.4 + this.geoidOffset), color, width: size * 4, height: size * 4,
+      scaleByDistance: new Cesium.NearFarScalar(150, 1.5, 12000, 0.4),
       translucencyByDistance: new Cesium.NearFarScalar(15000, 1, 30000, 0),
-    });
-    (p as unknown as { base: number }).base = size;
-    return p;
+      eyeOffset: new Cesium.Cartesian3(0, 0, -2),
+    }) as Cesium.Billboard & { base: number; col: Cesium.Color; day?: boolean };
+    b.base = size; b.col = color; b.day = day;
+    return b;
   }
   private buildRunwayLights(rw: Runway) {
     const ends: [RunwayEnd, RunwayEnd][] = [[rw.le, rw.he], [rw.he, rw.le]];
     const len = distance(rw.le, rw.he);
     const half = rw.width / 2 + 1;
-    const W = Cesium.Color.fromCssColorString('#fff3d6'), Y = Cesium.Color.fromCssColorString('#ffcc33');
-    const G = Cesium.Color.fromCssColorString('#3dff6a'), R = Cesium.Color.fromCssColorString('#ff3030');
+    const { W, Y, G, R, S } = this.C;
     const hAt = (t: number) => rw.le.elev + (rw.he.elev - rw.le.elev) * t;
-    // edge lights
-    for (let s = 0; s <= len; s += 60) {
+    const big = rw.width > 40 || rw.length > 2400;
+    // edge lights (yellow over the last 600 m: caution zone)
+    for (let s = 60; s < len - 30; s += 60) {
       const t = s / len;
       const c = destination(rw.le, rw.le.hdg, s);
       for (const side of [-1, 1]) {
         const p = destination(c, rw.le.hdg + 90 * side, half);
-        this.addLight(p.lat, p.lon, hAt(t), len - s < 600 || s < 600 ? Y : W, 4);
-      }
-      // centreline (large runways)
-      if (rw.width > 40) {
-        const col = len - s < 300 || s < 300 ? R : len - s < 900 || s < 900 ? (Math.floor(s / 60) % 2 ? R : W) : W;
-        this.addLight(c.lat, c.lon, hAt(t), col, 3);
+        this.addLight(p.lat, p.lon, hAt(t), len - s < 600 || s < 600 ? Y : W, 4, big);
       }
     }
-    for (const [end, opp] of ends) {
-      void opp;
+    // centre line every 15 m (red/white alternating from 900 m to go, all red over the last 300 m)
+    if (big) for (let s = 15; s < len - 10; s += 15) {
+      const c = destination(rw.le, rw.le.hdg, s), t = s / len;
+      const toGo = Math.min(s, len - s);
+      const col = toGo < 300 ? R : toGo < 900 ? (Math.floor(s / 15) % 2 ? R : W) : W;
+      this.addLight(c.lat, c.lon, hAt(t), col, 2.6, true);
+    }
+    for (const [end] of ends) {
       const hdg = end.hdg;
-      // threshold (green) & runway end (red, seen from the other direction; shown combined)
-      for (let k = -half; k <= half; k += 3) {
+      // threshold / end bar (one row of lights, green from the approach and red from the runway)
+      for (let k = -half; k <= half + 0.01; k += 3) {
         const p = destination(end, hdg + 90, k);
-        this.addLight(p.lat, p.lon, end.elev, G, 5);
+        this.dirLights.push({ b: this.addLight(p.lat, p.lon, end.elev, G, 5, true), lat: end.lat, lon: end.lon, hdg });
       }
-      // approach lighting system (simplified ALSF-II): 900 m centreline bars + crossbar at 300 m
+      // threshold wing bars
+      for (const side of [-1, 1]) for (let k = 0; k < 5; k++) {
+        const p = destination(end, hdg + 90 * side, half + 3 + k * 3);
+        this.addLight(p.lat, p.lon, end.elev, G, 5, true);
+      }
+      // REIL: two strobes beside the threshold
+      for (const side of [-1, 1]) {
+        const p = destination(end, hdg + 90 * side, half + 14);
+        this.flashers.push({ b: this.addLight(p.lat, p.lon, end.elev + 0.5, S, 8, true), end, k: 0, n: 1, reil: true });
+      }
+      // touchdown zone: rows of three white lights either side of the centre line, every 60 m for 900 m
+      if (big) for (let d = 60; d <= 900; d += 60) {
+        const c = destination(end, hdg, d), t = distance(rw.le, c) / len;
+        for (const side of [-1, 1]) for (let k = 0; k < 3; k++) {
+          const p = destination(c, hdg + 90 * side, 9 + k * 1.5);
+          this.addLight(p.lat, p.lon, hAt(t), W, 3, true);
+        }
+      }
+      // approach lighting (ALSF-II style): 900 m of centre-line barrettes, crossbars at 150 and 300 m,
+      // red side rows over the first 300 m, and sequenced flashers from 900 m in towards 300 m
       if (rw.length > 1800) {
-        for (let d = 60; d <= 900; d += 30) {
+        const n = Math.round((900 - 300) / 30) + 1;
+        for (let d = 30; d <= 900; d += 30) {
           const c = destination(end, hdg + 180, d);
           for (let k = -2; k <= 2; k++) {
-            const p = destination(c, hdg + 90, k * 1.2);
-            this.addLight(p.lat, p.lon, end.elev, W, 4);
+            const p = destination(c, hdg + 90, k * 1.0);
+            this.addLight(p.lat, p.lon, end.elev, W, 4, true);
           }
-          if (d === 300) for (let k = -15; k <= 15; k += 1.5) { const p = destination(c, hdg + 90, k); this.addLight(p.lat, p.lon, end.elev, W, 4); }
+          if (d <= 270) for (const side of [-1, 1]) for (let k = 0; k < 3; k++) {
+            const p = destination(c, hdg + 90 * side, 11 + k * 1.5);
+            this.addLight(p.lat, p.lon, end.elev, R, 4, true);
+          }
+          if (d === 150 || d === 300) for (let k = -15; k <= 15; k += 1.5) {
+            if (Math.abs(k) < 3) continue;
+            const p = destination(c, hdg + 90, k);
+            this.addLight(p.lat, p.lon, end.elev, W, 4, true);
+          }
+          if (d >= 300) {
+            const fl = this.addLight(c.lat, c.lon, end.elev + 0.6, S, 8, true);
+            fl.show = false;
+            this.flashers.push({ b: fl, end, k: Math.round((900 - d) / 30), n, reil: false });
+          }
         }
       }
       // PAPI on the left, 300 m past threshold
@@ -1039,8 +1130,28 @@ export class World {
       const thr = [3.5, 3.17, 2.83, 2.5];
       for (let i = 0; i < 4; i++) {
         const p = destination(base, hdg - 90, half + 15 + i * 9);
-        const pt = this.addLight(p.lat, p.lon, end.elev + 0.6, R, 7);
+        const pt = this.addLight(p.lat, p.lon, end.elev + 0.6, R, 7, true);
         this.papi.push({ p: pt, pos: { lat: p.lat, lon: p.lon, h: end.elev + this.geoidOffset }, thr: thr[i], end });
+      }
+    }
+  }
+  /** Green centre-line lights every 30 m and blue edge lights every 60 m along the taxiways (night / low visibility). */
+  private buildTaxiLights(lines: { pts: { lat: number; lon: number }[]; w: number }[]) {
+    const { G, B } = this.C;
+    let n = 0;
+    for (const ln of lines) {
+      for (let i = 1; i < ln.pts.length && n < 6000; i++) {
+        const a = ln.pts[i - 1], b = ln.pts[i], l = distance(a, b), h = bearing(a, b);
+        for (let s = 0; s < l; s += 30) {
+          const c = destination(a, h, s);
+          const gh = this.elevation.ground(c.lat, c.lon).h;
+          if (!Number.isFinite(gh)) continue;
+          this.addLight(c.lat, c.lon, gh, G, 2.6, false, this.taxiLights); n++;
+          if (s % 60 === 0) for (const side of [-1, 1]) {
+            const p = destination(c, h + 90 * side, ln.w / 2 + 1);
+            this.addLight(p.lat, p.lon, gh, B, 2.6, false, this.taxiLights); n += 1;
+          }
+        }
       }
     }
   }
@@ -1353,7 +1464,7 @@ export class World {
       this.degraded++;
       this.errTimes = [];
       if (this.degraded === 1) { this.routeLines.show = false; this.clouds.show = false; }
-      if (this.degraded === 2) { this.scene.postProcessStages.fxaa.enabled = false; this.lights.show = false; this.rwyLights.show = false; if (this.tileset) this.tileset.show = false; this.scene.globe.show = true; }
+      if (this.degraded === 2) { this.scene.postProcessStages.fxaa.enabled = false; this.lights.show = false; this.rwyLights.show = false; this.taxiLights.show = false; if (this.tileset) this.tileset.show = false; this.scene.globe.show = true; }
       if (this.degraded === 3) { this.setImageryFallback(); }
     }
     this.onRenderIssue(msg, false);

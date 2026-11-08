@@ -49,6 +49,9 @@ export class AirportScenery {
   /** How many signs went up (diagnostics / tests). */
   signCount = 0;
   signSpots: LatLon[] = [];
+  /** Taxiway centre lines (for the taxiway lights) and a counter that changes when they do. */
+  taxiLines: { pts: LatLon[]; w: number }[] = [];
+  taxiGen = 0;
   /** How many trees were planted, and where one of them is (diagnostics / tests). */
   treeInfo: { n: number; sample: LatLon } | null = null;
   /** Tree budget from the graphics quality (0 = none). */
@@ -142,6 +145,7 @@ export class AirportScenery {
     if (this.trees) { this.scene.primitives.remove(this.trees); this.trees = null; }
     if (this.signs) { this.scene.primitives.remove(this.signs); this.signs = null; }
     this.socks = []; this.signCount = 0;
+    if (this.taxiLines.length) { this.taxiLines = []; this.taxiGen++; }
     if (this.ground) { this.scene.groundPrimitives.remove(this.ground); this.ground = null; }
     this.jetways = [];
     this.origin = null;
@@ -177,6 +181,7 @@ export class AirportScenery {
     });
     try { this.buildGround(data, layout, frame, apt, this.lastOffset); } catch (e) { console.warn('airport ground', e); }
     try { await this.buildModel(data, layout, frame, apt, gen); } catch (e) { console.warn('airport buildings', e); }
+    this.taxiLines = data.taxiways.filter(w => w.tags.aeroway !== 'taxilane').map(w => ({ pts: w.pts, w: 23 })); this.taxiGen++;
     try { await this.buildSigns(data, frame, apt, gen); } catch (e) { console.warn('airport signs', e); }
     try { await this.buildTrees(osm ?? data, data, frame, apt, gen); } catch (e) { console.warn('airport trees', e); }
     const w = this.waiters.get(apt.icao);
