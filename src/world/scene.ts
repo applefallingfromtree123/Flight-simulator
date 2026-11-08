@@ -223,6 +223,11 @@ export class World {
     s.atmosphere.saturationShift = 0.08;
     s.atmosphere.brightnessShift = 0.02;
     this.effects?.setLook(this.lookOn, tier);
+    // ultra: screen-space ambient occlusion (contact shadows under wings, gear, in panel gaps and between buildings)
+    const ao = s.postProcessStages.ambientOcclusion;
+    ao.enabled = tier >= 3;
+    ao.uniforms.intensity = 2.2; ao.uniforms.bias = 0.12; ao.uniforms.lengthCap = 0.12; ao.uniforms.stepSize = 1.6;
+    ao.uniforms.blurStepSize = 0.9; ao.uniforms.ambientOcclusionOnly = false;
     if (this.scenery) this.scenery.treeBudget = [0, 2500, 5000, 9000][tier];
     const bloom = s.postProcessStages.bloom;
     bloom.uniforms.contrast = 119;
@@ -769,6 +774,15 @@ export class World {
           float dy = u_flex.x * s * s * wing;
           vec3 de = mat3(u_airToEye) * vec3(0.0, dy, 0.0);
           vsOutput.positionMC = (czm_inverseModelView * vec4(pe.xyz + de, 1.0)).xyz;
+        }`,
+      // polished clear-coat paint: lower roughness and a Fresnel sheen at grazing angles (sky reflections on the fuselage)
+      fragmentShaderText: `
+        void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+          vec3 n = normalize(material.normalEC);
+          vec3 v = normalize(-fsInput.attributes.positionEC);
+          float fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 5.0);
+          material.roughness = clamp(material.roughness * 0.75, 0.06, 1.0);
+          material.specular = mix(material.specular, vec3(1.0), fres * 0.55);
         }`,
     });
     this.model.customShader = this.flexShader;

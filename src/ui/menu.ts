@@ -49,7 +49,20 @@ const DEF_CFG: FlightConfig = {
   aircraftId: 'a320neo', livery: {}, dep: 'RKSI', depRwy: '', start: 'runway', arr: 'RJTT', arrRwy: '', route: '',
   cruiseFt: 35000, fuelPct: 60, payloadPct: 70, time: 'now', weather: 'live', windDir: null, windSpd: null, visibility: null,
 };
-const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'medium', shadows: false, volume: 0.7, autoMixture: true, deck3d: true };
+const DEF_SET: Settings = { imagery: 'esri', googleKey: '', ionToken: '', photoreal: false, quality: 'high', shadows: true, volume: 0.7, autoMixture: true, deck3d: true };
+/** Graphics upgrade: raise saved low/medium settings to high once (volumetric clouds, sharpening, shadows). */
+function upgradeGraphics(s: Settings): Settings {
+  try {
+    if (!localStorage.getItem('sky.gfx3')) {
+      localStorage.setItem('sky.gfx3', '1');
+      if (s.quality === 'low' || s.quality === 'medium') s.quality = 'high';
+      s.shadows = true;
+      s.look = true;
+      save('sky.settings', s);
+    }
+  } catch { /* ignore */ }
+  return s;
+}
 
 /** Live weather became the default (like MSFS): switch saved plans over once; a preset picked later is kept. */
 function liveByDefault(c: FlightConfig): FlightConfig {
@@ -61,7 +74,7 @@ function save(k: string, v: unknown) { try { localStorage.setItem(k, JSON.string
 
 export class Menu {
   cfg: FlightConfig = liveByDefault(load('sky.cfg', DEF_CFG));
-  settings: Settings = load('sky.settings', DEF_SET);
+  settings: Settings = upgradeGraphics(load('sky.settings', DEF_SET));
   onFly: (c: FlightConfig) => void = () => {};
   onPreview: (apt: Airport) => void = () => {};
   onRoute: (pts: { lat: number; lon: number }[]) => void = () => {};
@@ -131,27 +144,52 @@ export class Menu {
     this.el.classList.add('home');
     this.onHome(true);
     const lic = this.career ? licenceOf(this.career).name : null;
-    const card = (tab: Menu['tab'], img: string, title: string, sub: string, big = false) =>
-      `<button class="h-card${big ? ' big' : ''}" data-go="${tab}" style="background-image:linear-gradient(180deg,#0000 35%,#000c),url(ui/${img}.webp)">
-        <span class="h-t">${title}</span><span class="h-s">${sub}</span></button>`;
+    const a = getAircraft(this.cfg.aircraftId);
+    const fgm = fgModelFor(a.id);
+    const stored = this.cfg.livery?.[a.id];
+    const livName = stored?.startsWith(PR_PREFIX) ? getLivery(a, stored.slice(PR_PREFIX.length)).name : fgm ? fgLivery(fgm, stored).name : getLivery(a, stored).name;
+    const dep = this.db.get(this.cfg.dep), arr = this.db.get(this.cfg.arr);
+    const nm = dep && arr ? Math.round(Math.hypot((arr.lat - dep.lat) * 60, (arr.lon - dep.lon) * 60 * Math.cos(dep.lat * Math.PI / 180))) : 0;
+    const startName = ({ gate: '게이트', runway: '활주로', cold: '콜드 & 다크', final: '최종 접근', cruise: '순항', air: '공중' } as Record<string, string>)[this.cfg.start] ?? this.cfg.start;
+    const wx = this.cfg.weather === 'live' ? '실시간 날씨' : this.cfg.weather;
+    const now = new Date();
+    const card = (tab: Menu['tab'], img: string, icon: string, title: string, sub: string, cls = '') =>
+      `<button class="h-card ${cls}" data-go="${tab}"><span class="h-img" style="background-image:url(ui/${img}.webp)"></span>
+        <span class="h-ico">${icon}</span><span class="h-t">${title}</span><span class="h-s">${sub}</span></button>`;
+    const tips = ['EFB → 객실에서 기내식 · 음료 서비스를 하면 승객 만족도가 올라갑니다', '3D 조종석: 천장은 오버헤드, 가운데 아래는 스로틀·플랩·기어, 유리창 아래는 자동비행',
+      '이륙 추력을 85% 이상 넣으면 TOGA — 비행계획이 있으면 NAV · VNAV가 자동 연결', 'T/D(강하 시작점)에서 MCP 고도를 낮추면 VNAV가 3° 경로로 강하합니다',
+      '설정 → 향상된 화질로 선명화·색보정을 끄고 켤 수 있습니다', '항공사 모드: 7일 연속 자금이 마이너스면 파산 — 긴급 대출로 버티세요'];
     this.el.innerHTML = `
-      <div class="home-top">
-        <h1>SKY<span>LINE</span><small>FLIGHT SIMULATOR</small></h1>
-        <div>${canResume ? '<button id="resume" class="primary">비행 재개</button>' : ''}<button id="menuDiag">진단</button></div>
+      <div class="hh">
+        <aside class="hh-side">
+          <h1>SKY<span>LINE</span><small>FLIGHT SIMULATOR</small></h1>
+          <div class="hh-clock"><b>${now.toTimeString().slice(0, 5)}</b><span>${now.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'long' })} · ${now.toISOString().slice(11, 16)}Z</span></div>
+          <div class="hh-next">
+            <div class="hh-label">다음 비행</div>
+            <div class="hh-ac">${a.mfr} ${a.name}${fgm ? ' <b class="fgtag">FG</b>' : ''}</div>
+            <div class="hh-liv">${livName}</div>
+            <div class="hh-route"><div><b>${dep?.icao ?? '—'}</b><span>${dep?.city || dep?.name || ''}</span></div><i>✈</i><div><b>${arr?.icao ?? '—'}</b><span>${arr?.city || arr?.name || ''}</span></div></div>
+            <div class="hh-facts"><span>${nm ? nm.toLocaleString() + ' NM' : '—'}</span><span>FL${Math.round(this.cfg.cruiseFt / 100)}</span><span>${startName} 출발</span><span>${wx}</span></div>
+            <div class="hh-btns">${canResume ? '<button id="resume" class="primary">▶ 비행 재개</button>' : '<button id="quickFly" class="primary">▶ 바로 출발</button>'}<button data-go="plan">계획 수정</button></div>
+          </div>
+          <div class="hh-mini">${lic ? `<div><span>커리어</span><b>${lic}</b></div>` : ''}<div><span>기체</span><b>45종 실제 모델</b></div><div><span>공항</span><b>9,560곳</b></div></div>
+          <div class="hh-foot"><button data-go="settings">⚙️ 설정</button><button data-go="help">⌨️ 조작법</button><button id="menuDiag">진단</button></div>
+        </aside>
+        <section class="hh-grid">
+          ${card('plan', 'free', '🌍', '자유 비행', '전 세계 공항 · 실제 날씨 · 실사 3D 도시', 'wide')}
+          ${card('career', 'career', '🎖️', '커리어', lic ? `${lic} · $${this.career!.money.toLocaleString()}` : '학생 조종사부터 대형기 기장까지')}
+          ${card('airline', 'airline', '🏢', '항공사 운영', '기단 · 노선 · 허브 · 승객 서비스')}
+          ${card('activities', 'activities', '🎯', '액티비티', '착륙 챌린지 · 디스커버리 비행')}
+          ${card('aircraft', 'aircraft', '🛩️', '기체 · 도색', '실제 기체 모델 · 항공사 도색 25종+')}
+        </section>
       </div>
-      <div class="home-cards">
-        ${card('plan', 'free', '자유 비행', '전 세계 9,560개 공항 · 실제 날씨', true)}
-        ${card('career', 'career', '커리어', lic ? `${lic} · $${this.career!.money.toLocaleString()}` : '학생 조종사부터 대형기 기장까지')}
-        ${card('airline', 'airline', '항공사 운영', '기단 · 노선 · 승객 · 수익')}
-        ${card('activities', 'activities', '액티비티', '착륙 챌린지 · 디스커버리 비행')}
-        ${card('aircraft', 'aircraft', '기체 · 도색', '실제 기체 모델 45종 · 실제 항공사 도색')}
-        ${card('settings', 'settings', '설정', '그래픽 · 3D 도시 · 조종 장치')}
-      </div>
-      <div class="home-foot"><button data-go="help">조작법</button><span class="dim">FlightGear 실제 기체 · Cesium 지구 · 자체 비행역학</span></div>`;
+      <div class="hh-tip"><span>TIP</span><div class="hh-tip-run">${tips.map(t => `<i>${t}</i>`).join('')}${tips.map(t => `<i>${t}</i>`).join('')}</div></div>`;
     this.el.querySelectorAll<HTMLButtonElement>('[data-go]').forEach(b => b.onclick = () => { this.tab = b.dataset.go as Menu['tab']; this.render(canResume); });
     this.el.querySelector<HTMLButtonElement>('#menuDiag')!.onclick = () => this.onDiag();
     const res = this.el.querySelector<HTMLButtonElement>('#resume');
     if (res) res.onclick = () => this.onResume?.();
+    const qf = this.el.querySelector<HTMLButtonElement>('#quickFly');
+    if (qf) qf.onclick = () => { save('sky.cfg', this.cfg); this.onFly({ ...this.cfg }); };
   }
 
   private render(canResume: boolean) {
@@ -163,13 +201,13 @@ export class Menu {
         <h1 id="goHome" title="홈">SKY<span>LINE</span></h1>
         <div class="tabs">
           <button data-tab="home">⌂ 홈</button>
-          <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}">자유 비행</button>
-          <button data-tab="aircraft" class="${this.tab === 'aircraft' ? 'on' : ''}">기종 · 도색</button>
-          <button data-tab="career" class="${this.tab === 'career' ? 'on' : ''}">커리어</button>
-          <button data-tab="airline" class="${this.tab === 'airline' ? 'on' : ''}">항공사</button>
-          <button data-tab="activities" class="${this.tab === 'activities' ? 'on' : ''}">액티비티</button>
-          <button data-tab="settings" class="${this.tab === 'settings' ? 'on' : ''}">설정</button>
-          <button data-tab="help" class="${this.tab === 'help' ? 'on' : ''}">조작법</button>
+          <button data-tab="plan" class="${this.tab === 'plan' ? 'on' : ''}"><i>🌍</i>자유 비행</button>
+          <button data-tab="aircraft" class="${this.tab === 'aircraft' ? 'on' : ''}"><i>🛩️</i>기종 · 도색</button>
+          <button data-tab="career" class="${this.tab === 'career' ? 'on' : ''}"><i>🎖️</i>커리어</button>
+          <button data-tab="airline" class="${this.tab === 'airline' ? 'on' : ''}"><i>🏢</i>항공사</button>
+          <button data-tab="activities" class="${this.tab === 'activities' ? 'on' : ''}"><i>🎯</i>액티비티</button>
+          <button data-tab="settings" class="${this.tab === 'settings' ? 'on' : ''}"><i>⚙️</i>설정</button>
+          <button data-tab="help" class="${this.tab === 'help' ? 'on' : ''}"><i>⌨️</i>조작법</button>
         </div>
         <div><button id="menuDiag" title="렌더링 진단 정보">진단</button> ${canResume ? '<button id="resume">비행 재개 (Esc)</button>' : ''}</div>
       </header>
