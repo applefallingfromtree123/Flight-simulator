@@ -147,6 +147,35 @@ export class Sound {
     const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 120;
     const g = ctx.createGain(); g.gain.setValueAtTime(0.9, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
     src.connect(f).connect(g).connect(this.master); src.start(); src.stop(ctx.currentTime + 0.6);
+    // the body of the bump: a low sine drop
+    const o = ctx.createOscillator(); o.frequency.setValueAtTime(70, ctx.currentTime); o.frequency.exponentialRampToValueAtTime(35, ctx.currentTime + 0.25);
+    const og = ctx.createGain(); og.gain.setValueAtTime(0.7, ctx.currentTime); og.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    o.connect(og).connect(this.master); o.start(); o.stop(ctx.currentTime + 0.4);
+    // tyre chirp: the wheels spinning up from standstill
+    const ch = ctx.createBufferSource(); ch.buffer = this.noiseBuf;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.setValueAtTime(1500, ctx.currentTime); bp.frequency.exponentialRampToValueAtTime(700, ctx.currentTime + 0.3); bp.Q.value = 3;
+    const cg = ctx.createGain(); cg.gain.setValueAtTime(0.0001, ctx.currentTime); cg.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + 0.03); cg.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.35);
+    ch.connect(bp).connect(cg).connect(this.master); ch.start(); ch.stop(ctx.currentTime + 0.4);
+  }
+  /** A radio transmission: squelch break, a low hiss of static under the voice, and the squelch tail at the end. */
+  radio(ms: number) {
+    if (!this.ctx) return;
+    const ctx = this.ctx, t0 = ctx.currentTime, t1 = t0 + ms / 1000;
+    const click = (t: number, f: number) => {
+      const o = ctx.createOscillator(); o.type = 'square'; o.frequency.value = f;
+      const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.06, t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
+      o.connect(g).connect(this.master); o.start(t); o.stop(t + 0.06);
+    };
+    click(t0, 1800);
+    const n = ctx.createBufferSource(); n.buffer = this.noiseBuf; n.loop = true;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1800; bp.Q.value = 0.7;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t0); g.gain.exponentialRampToValueAtTime(0.025, t0 + 0.04); g.gain.setValueAtTime(0.025, t1); g.gain.exponentialRampToValueAtTime(0.0001, t1 + 0.12);
+    n.connect(bp).connect(g).connect(this.master); n.start(t0); n.stop(t1 + 0.15);
+    // squelch tail: a short burst of open-channel noise
+    const tail = ctx.createBufferSource(); tail.buffer = this.noiseBuf;
+    const tg = ctx.createGain(); tg.gain.setValueAtTime(0.0001, t1 + 0.1); tg.gain.exponentialRampToValueAtTime(0.09, t1 + 0.11); tg.gain.exponentialRampToValueAtTime(0.0001, t1 + 0.22);
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 900;
+    tail.connect(hp).connect(tg).connect(this.master); tail.start(t1 + 0.1); tail.stop(t1 + 0.25);
   }
   /** Rolling thunder: low-passed noise swelling and rumbling away over a few seconds. */
   thunder(delay: number) {

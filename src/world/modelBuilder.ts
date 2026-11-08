@@ -315,6 +315,26 @@ export async function buildAircraftGlb(ac: AircraftDef, aero: AeroModel, liv: Li
         cyl(metal, [xc - ln - (e.t === 'fan' ? rad * 0.3 : 0), yc, zz], [xc - ln - rad * 0.75, yc, zz], rad * 0.42, rad * 0.06, 14, false, false);
         if (e.mount === 'wing' || e.mount === 'wing4') box(engine, [xc - ln * 0.4, yc, (zz + wz) / 2 - rad * 0.3], [ln * 0.7, rad * 0.25, Math.abs(zz - wz)]);
         if (e.mount === 'aft') box(engine, [xc - ln * 0.5, (yc + Math.sign(yc) * -r) / 2 + Math.sign(yc) * 0.1, zz], [ln * 0.5, Math.abs(yc) - r * 0.6, rad * 0.4]);
+        if (e.t === 'fan') {
+          // the fan itself: 18 wide twisted titanium blades and a spiral-marked spinner, spinning with N1
+          const name = `fan${i}`;
+          const blade = new Part('#9aa3ab', 0.85, 0.28), cone = new Part('#2b2f34', 0.6, 0.35), mark = new Part('#f2f2f2', 0.1, 0.6);
+          const nb = 18, r0 = rad * 0.3, r1 = rad * 0.87;
+          for (let k = 0; k < nb; k++) {
+            const a = (k / nb) * Math.PI * 2;
+            const u: P3 = [0, Math.cos(a), Math.sin(a)], t: P3 = [0, -Math.sin(a), Math.cos(a)];
+            const w0 = rad * 0.12, w1 = rad * 0.16, tw0 = 0.05, tw1 = 0.12;   // chord and twist (fore/aft) grow outwards
+            const P = (rr: number, w: number, x: number): P3 => [x, u[1] * rr + t[1] * w, u[2] * rr + t[2] * w];
+            blade.quad(P(r0, -w0, tw0), P(r1, -w1, tw1), P(r1, w1, -tw1), P(r0, w0, -tw0));
+            blade.quad(P(r0, w0, -tw0 - 0.01), P(r1, w1, -tw1 - 0.01), P(r1, -w1, tw1 - 0.01), P(r0, -w0, tw0 - 0.01));
+          }
+          cyl(cone, [0.05, 0, 0], [-0.25, 0, 0], 0, r0 * 1.05, 16, false, true);
+          // a white spiral on the spinner: you can see it turning (ground crews watch it)
+          for (let k = 0; k < 6; k++) { const a = k * 0.5; mark.quad([0.0 - k * 0.04, Math.cos(a) * r0 * (0.2 + k * 0.13), Math.sin(a) * r0 * (0.2 + k * 0.13)], [-0.0 - k * 0.04, Math.cos(a + 0.35) * r0 * (0.2 + k * 0.13), Math.sin(a + 0.35) * r0 * (0.2 + k * 0.13)], [-0.04 - k * 0.04, Math.cos(a + 0.35) * r0 * (0.33 + k * 0.13), Math.sin(a + 0.35) * r0 * (0.33 + k * 0.13)], [-0.04 - k * 0.04, Math.cos(a) * r0 * (0.33 + k * 0.13), Math.sin(a) * r0 * (0.33 + k * 0.13)]); }
+          const pos: P3 = [xc - 0.08, yc, zz];
+          nodes.push({ name, parts: [blade, cone, mark], translation: pos });
+          meta.props.push({ name, pos, axis: 'x', dir: 1 });
+        }
       } else if (e.t === 'jet') {
         // internal: exhaust nozzle(s)
         const yc = e.mount === 'internal2' ? (i === 0 ? -0.45 : 0.45) * (dia / 1.6) : 0;

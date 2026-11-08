@@ -680,6 +680,7 @@ export class World {
         const e = ac.engines[Math.min(i, ac.engines.length - 1)];
         let rpm = ac.isRotor ? ac.rotorRpm * (pr.axis === 'z' ? 390 : 2000) : e ? e.rpm : 0;
         if (e && (e.def.t === 'tprop')) rpm = e.np * 12;
+        if (e && (e.def.t === 'fan' || e.def.t === 'jet')) rpm = e.n1 * 50;
         const rate = Math.min(rpm / 60 * Math.PI * 2, 28 + (pr.axis === 'z' ? 0 : 10)); // cap to avoid strobing
         this.propAngle[i] = (this.propAngle[i] + rate * dt * pr.dir) % (Math.PI * 2);
         const a = this.propAngle[i];
@@ -937,6 +938,7 @@ export class World {
       const e = ac.engines[Math.min(s.engine, ac.engines.length - 1)];
       let rpm = s.kind === 'rotor' ? ac.rotorRpm * 390 : s.kind === 'tail' ? ac.rotorRpm * 2000 : e ? e.rpm : 0;
       if (s.kind === 'prop' && e && e.def.t === 'tprop') rpm = e.np * 12;
+      if (s.kind === 'prop' && e && (e.def.t === 'fan' || e.def.t === 'jet')) rpm = e.n1 * 50;   // turbofan fans: N1 % (100 % ≈ 5 000 rpm)
       const rate = Math.min(rpm / 60 * Math.PI * 2, s.kind === 'prop' ? 38 : 28); // cap to avoid strobing
       fg.angle[i] = (fg.angle[i] + rate * dt) % (Math.PI * 2);
       spinAbout(n, s.pivot, s.axis, fg.angle[i]);
@@ -1109,6 +1111,60 @@ export class World {
     const k = d.cockpit === 'fighter' ? 0.2 : d.cat === 'ga' || d.cat === 'vintage' || d.cat === 'glider' ? (d.eng.mount === 'nose' ? 0.33 : 0.25) : d.cat === 'turboprop' ? 0.22 : Math.min(0.1, 3.0 / d.L + 0.02);
     const seat = d.cockpit === 'fighter' || d.seats === 1 || d.cat === 'glider' || d.id === 'j3cub' || d.id === 'extra330' ? 0 : -Math.min(0.55, r * 0.35);
     return [d.L * 0.5 - k * d.L, seat, -r * (d.cockpit === 'fighter' ? 0.75 : 0.42)];
+  }
+
+  // ───────────────────────── touchdown: tyre smoke and the jolt ─────────────────────────
+  private shakeAmp = 0;
+  private smoke: { ps: Cesium.ParticleSystem; t: number }[] = [];
+  private puff: HTMLCanvasElement | null = null;
+  /**
+   * The main wheels hit the runway: the tyres spin up from standstill in a puff of rubber smoke (more for a harder,
+   * faster touchdown) that stays on the runway as the aircraft rolls on, and the camera takes the jolt.
+   */
+  touchdown(ac: Aircraft, fpm: number) {
+    const hard = Math.min(1, Math.max(0, fpm / 600));
+    this.shakeAmp = Math.max(this.shakeAmp, 0.004 + hard * 0.02);
+    if (ac.gs < 25 * 0.5144 || ac.isRotor) return;
+    if (!this.puff) {
+      const cv = document.createElement('canvas'); cv.width = cv.height = 64;
+      const g = cv.getContext('2d')!, gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+      gr.addColorStop(0, 'rgba(255,255,255,0.95)'); gr.addColorStop(0.55, 'rgba(255,255,255,0.4)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+      this.puff = cv;
+    }
+    const mains = ac.aero.gear.filter(l => l.brake && !l.tail && Math.abs(l.pos[1]) > 0.3);
+    const legs = mains.length ? mains : ac.aero.gear.filter(l => l.pos[0] < 0);
+    const n = Math.round(14 + 30 * hard + Math.min(20, ac.gs / 4));
+    for (const l of legs) {
+      const local = new Cesium.Cartesian3(l.pos[0], -l.pos[1], -l.pos[2]);
+      const wp = Cesium.Matrix4.multiplyByPoint(this.acMatrix, local, new Cesium.Cartesian3());
+      const c = Cesium.Cartographic.fromCartesian(wp);
+      const gh = this.elevation.ground(c.latitude * 180 / Math.PI, c.longitude * 180 / Math.PI).h + this.geoidOffset + 0.4;
+      const at = Cesium.Cartesian3.fromRadians(c.longitude, c.latitude, gh);
+      const ps = this.scene.primitives.add(new Cesium.ParticleSystem({
+        image: this.puff, sizeInMeters: true, modelMatrix: Cesium.Transforms.eastNorthUpToFixedFrame(at),
+        minimumImageSize: new Cesium.Cartesian2(1.2, 1.2), maximumImageSize: new Cesium.Cartesian2(2.4, 2.4), startScale: 1, endScale: 5 + hard * 3,
+        minimumParticleLife: 1.4, maximumParticleLife: 3.2, minimumSpeed: 1.5, maximumSpeed: 4 + hard * 4,
+        emissionRate: 0, bursts: [new Cesium.ParticleBurst({ time: 0, minimum: n, maximum: n + 10 }), new Cesium.ParticleBurst({ time: 0.15, minimum: n / 2, maximum: n / 2 + 5 })],
+        emitter: new Cesium.SphereEmitter(0.6), lifetime: 4, loop: false,
+        startColor: new Cesium.Color(0.88, 0.88, 0.86, 0.75), endColor: new Cesium.Color(0.8, 0.8, 0.78, 0),
+      })) as Cesium.ParticleSystem;
+      this.smoke.push({ ps, t: 5 });
+    }
+  }
+  private updateSmoke(dt: number) {
+    for (const s of this.smoke) s.t -= dt;
+    for (const s of this.smoke.filter(x => x.t <= 0)) this.scene.primitives.remove(s.ps);
+    this.smoke = this.smoke.filter(x => x.t > 0);
+  }
+  /** After the camera is placed for the frame: the touchdown jolt (decays in a fraction of a second). */
+  applyShake(dt: number) {
+    this.updateSmoke(dt);
+    if (this.shakeAmp < 0.0004) { this.shakeAmp = 0; return; }
+    const cam = this.scene.camera;
+    cam.lookUp((Math.random() - 0.5) * this.shakeAmp * 2);
+    cam.lookRight((Math.random() - 0.5) * this.shakeAmp);
+    this.shakeAmp *= Math.exp(-dt * 7);
   }
 
   updateCamera(ac: Aircraft, dt: number) {

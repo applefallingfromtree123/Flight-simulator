@@ -202,7 +202,9 @@ class App {
       enginesRunning: () => this.ac!.engines.some(e => e.running),
       onPushback: () => this.startPushback(),
       pushDone: () => this.push.done,
+      qnh: () => this.weather.qnh,
     }, this.ac!);
+    this.atc.onTx = (_who, ms) => { if (!this.atc?.muted) this.sound.radio(ms); };
     this.atc.muted = this.menu.settings.volume === 0;
     this.atc.onChange = () => this.renderAtc();
     this.arrApt = arr ?? null; this.arrLayout = null;
@@ -983,6 +985,8 @@ class App {
           toast(`TOUCHDOWN ${Math.round(fpm)} fpm · ${Math.round(ac.ias / KT)} kt · ${grade}`);
         }
         s.events.push('touchdown');
+        if (fpm > 380) s.events.push('touchdown');   // a firm one: a second, heavier thump
+        this.world.touchdown(ac, fpm);
         this.job.fpm = fpm;
         if (this.pax && ac.gs > 20 * KT) this.pax.touchdown(fpm);
       }
@@ -1037,6 +1041,7 @@ class App {
     w.cockpit3d.update(ac, this.av, w.acMatrix, w.view === 'cockpit' && w.deck3d, dtReal,
       { pitch: c.pitch, roll: c.roll, throttle: ac.engineCmd.map(e => e.throttle), collective: ac.collective }, 1 - w.nightFactor(ac.lat, ac.lon) * 0.75);
     w.updateCamera(ac, dtReal);
+    w.applyShake(dtReal);
     const night = w.nightFactor(ac.lat, ac.lon);
     const eyeAlt = w.view === 'cockpit' || w.view === 'cockpit-hud' ? ac.alt : w.scene.camera.positionCartographic.height - w.geoidOffset;
     w.updateAirportLights(ac, night, { lat: ac.lat, lon: ac.lon, alt: ac.alt });
@@ -1175,6 +1180,7 @@ class App {
 
 const app = new App();
 (window as unknown as { sky: App }).sky = app;
+(window as unknown as { Cesium: typeof Cesium }).Cesium = Cesium;   // tests / console
 app.boot().catch(e => {
   console.error(e);
   const webgl = !!document.createElement('canvas').getContext('webgl2');

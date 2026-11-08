@@ -11,7 +11,7 @@ import { speak } from '../sim/passengers.ts';
 
 export type AtcPhase = 'parked' | 'cleared' | 'push' | 'taxi' | 'holding' | 'takeoff' | 'climb' | 'cruise' | 'descent' | 'approach' | 'final' | 'landed' | 'taxiin' | 'done';
 type Station = 'DEL' | 'GND' | 'TWR' | 'DEP' | 'CTR' | 'APP';
-export interface AtcLine { who: 'atc' | 'pilot'; station: string; text: string; ko: string }
+export interface AtcLine { who: 'atc' | 'pilot' | 'other'; station: string; text: string; ko: string }
 
 export interface AtcSetup {
   callsign: string;          // "SkyLine 123"
@@ -22,7 +22,14 @@ export interface AtcSetup {
   enginesRunning: () => boolean;
   onPushback: () => void;
   pushDone: () => boolean;
+  /** Altimeter setting (hPa) for clearances. */
+  qnh?: () => number;
 }
+
+/** Other traffic on the frequency (airline, ICAO telephony, flight number). */
+const TRAFFIC: [string, string][] = [['Korean Air', 'KAL'], ['Asiana', 'AAR'], ['Jeju Air', 'JJA'], ['Jin Air', 'JNA'], ['Japan Air', 'JAL'], ['All Nippon', 'ANA'],
+  ['Cathay', 'CPX'], ['Lufthansa', 'DLH'], ['Speedbird', 'BAW'], ['United', 'UAL'], ['Delta', 'DAL'], ['Emirates', 'UAE'], ['Singapore', 'SIA'], ['Air China', 'CCA'], ['Qatari', 'QTR'], ['Air Busan', 'ABL']];
+const ATIS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
 const NATO: Record<string, string> = { A: 'alpha', B: 'bravo', C: 'charlie', D: 'delta', E: 'echo', F: 'foxtrot', G: 'golf', H: 'hotel', I: 'india', J: 'juliett', K: 'kilo', L: 'lima', M: 'mike',
   N: 'november', O: 'oscar', P: 'papa', Q: 'quebec', R: 'romeo', S: 'sierra', T: 'tango', U: 'uniform', V: 'victor', W: 'whiskey', X: 'x-ray', Y: 'yankee', Z: 'zulu' };
@@ -46,6 +53,10 @@ export class Atc {
   private climbFl = 0;
   muted = false;
   onChange: () => void = () => {};
+  /** A transmission starts (for the radio squelch and static), with its length in ms. */
+  onTx: (who: 'atc' | 'pilot' | 'other', ms: number) => void = () => {};
+  private atis = ATIS[Math.floor(Math.random() * ATIS.length)];
+  private nextChatter = performance.now() + 15000 + Math.random() * 20000;
 
   constructor(private s: AtcSetup, private ac: Aircraft) {
     this.climbFl = Math.min(s.cruiseFt, 23000);
@@ -65,17 +76,61 @@ export class Atc {
   }
 
   /** Queue a transmission so calls don't talk over each other. */
-  private tx(who: 'atc' | 'pilot', text: string, ko: string, after?: () => void) {
+  private tx(who: 'atc' | 'pilot' | 'other', text: string, ko: string, after?: () => void, station?: string, voice?: { rate: number; pitch: number }) {
     this.queue.push(() => {
-      const line: AtcLine = { who, station: who === 'atc' ? this.freq.station : this.s.callsign, text, ko };
+      const line: AtcLine = { who, station: station ?? (who === 'atc' ? this.freq.station : this.s.callsign), text, ko };
       this.log.push(line);
       if (this.log.length > 40) this.log.shift();
       if (who === 'atc') this.lastAtc = line;
-      if (!this.muted) speak(who === 'atc' ? text : text, 'en-US', who === 'atc' ? { rate: 1.08, pitch: 0.95 } : { rate: 1.15, pitch: 1.15, voiceHint: /Daniel|Alex|Fred|Google UK|Male/ });
-      this.busyUntil = performance.now() + Math.max(1500, text.length * 48);
+      const ms = Math.max(1500, text.length * 48);
+      if (!this.muted) speak(text, 'en-US', voice ?? (who === 'atc' ? { rate: 1.08, pitch: 0.95 } : { rate: 1.15, pitch: 1.15, voiceHint: /Daniel|Alex|Fred|Google UK|Male/ }));
+      this.onTx(who, ms);
+      this.busyUntil = performance.now() + ms + 350;   // a short gap between calls, as on a real frequency
       after?.();
       this.onChange();
     });
+  }
+
+  /**
+   * Other traffic on the frequency: airliners getting their own clearances from the same controller, so the
+   * radio sounds like a real, busy airport (ground: taxi; tower: takeoff / landing; departure / approach: levels).
+   */
+  private chatter() {
+    const s = this.s, st = this.freq.station;
+    const [tel, icao] = TRAFFIC[Math.floor(Math.random() * TRAFFIC.length)];
+    const no = String(Math.floor(Math.random() * 900) + 100);
+    const cs = `${tel} ${no.split('').map(c => DIG[+c]).join(' ')}`, csTxt = `${icao}${no}`;
+    const rwy = (st.includes('Approach') || this.phase === 'final' || this.phase === 'approach') && s.arrEnd ? s.arrEnd.ident : s.depEnd.ident;
+    const w = s.wind(), wind = `wind ${digits(String(Math.round(w.dir / 10) * 10).padStart(3, '0'))} at ${digits(String(Math.round(w.spd)))}`;
+    const fl = (Math.floor(Math.random() * 12) + 24) * 10;
+    const voice = { rate: 1.1 + Math.random() * 0.15, pitch: 0.8 + Math.random() * 0.5 };
+    const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
+    let pair: [string, string, string] | null = null;   // controller, pilot readback, Korean
+    if (st.includes('Ground') || st.includes('Delivery')) pair = pick([
+      [`${cs}, taxi to holding point runway ${rwySay(rwy)} via ${pick(['alpha', 'bravo', 'charlie', 'kilo'])}`, `Taxi holding point ${rwySay(rwy)}, ${cs}`, `${csTxt} 활주로 ${rwy} 대기 지점까지 택시`],
+      [`${cs}, push and start approved, facing ${pick(['north', 'south', 'east', 'west'])}`, `Push and start approved, ${cs}`, `${csTxt} 푸시백 승인`],
+      [`${cs}, give way to the company traffic from left to right, then continue`, `Give way, then continue, ${cs}`, `${csTxt} 좌측 항공기 먼저 통과 후 진행`]]);
+    else if (st.includes('Tower') && ['holding', 'takeoff', 'final', 'landed'].includes(this.phase)) pair = pick([
+      // the runway is ours: everyone else is held or sequenced behind us
+      [`${cs}, hold short runway ${rwySay(rwy)}, ${this.phase === 'final' ? 'landing' : 'departing'} traffic`, `Holding short ${rwySay(rwy)}, ${cs}`, `${csTxt} 활주로 ${rwy} 진입 전 대기`],
+      [`${cs}, continue approach, number two, traffic ${this.phase === 'final' ? 'on short final' : 'to depart'}`, `Continue, number two, ${cs}`, `${csTxt} 접근 계속, 2번째`],
+      this.phase === 'final'
+        ? [`${cs}, behind the landing ${pick(['Airbus', 'Boeing'])} on short final, line up and wait behind`, `Behind the landing traffic, line up and wait behind, ${cs}`, `${csTxt} 착륙기 뒤 진입 대기`]
+        : [`${cs}, number two for departure, hold short runway ${rwySay(rwy)}`, `Number two, holding short, ${cs}`, `${csTxt} 이륙 순서 2번째`]]);
+    else if (st.includes('Tower')) pair = pick([
+      [`${cs}, runway ${rwySay(rwy)}, ${wind}, cleared to land`, `Cleared to land ${rwySay(rwy)}, ${cs}`, `${csTxt} 활주로 ${rwy} 착륙 허가`],
+      [`${cs}, line up and wait runway ${rwySay(rwy)}`, `Line up and wait ${rwySay(rwy)}, ${cs}`, `${csTxt} 활주로 진입 후 대기`],
+      [`${cs}, vacate left via next taxiway, contact ground ${freqSay(this.mhz('GND', s.arr ?? s.dep))}`, `Vacate left, ground, ${cs}`, `${csTxt} 활주로 이탈 후 지상 관제로`]]);
+    else if (st.includes('Departure') || st.includes('Control')) pair = pick([
+      [`${cs}, climb and maintain flight level ${digits(String(fl))}`, `Climb flight level ${digits(String(fl))}, ${cs}`, `${csTxt} FL${fl}까지 상승`],
+      [`${cs}, turn right heading ${digits(String(Math.floor(Math.random() * 35 + 1) * 10).padStart(3, '0'))}, vectors for traffic`, `Right heading, ${cs}`, `${csTxt} 우선회, 교통 회피 유도`],
+      [`${cs}, contact ${pick(['Seoul', 'Fukuoka', 'Shanghai', 'Tokyo'])} control ${freqSay(118 + Math.floor(Math.random() * 18) + Math.floor(Math.random() * 4) * 0.025)}`, `Changing over, ${cs}`, `${csTxt} 다음 항로 관제로 이양`]]);
+    else if (st.includes('Approach')) pair = pick([
+      [`${cs}, descend and maintain ${flSay(4000)}, reduce speed one eight zero knots`, `Descend four thousand, one eight zero knots, ${cs}`, `${csTxt} 4,000 ft 강하, 180kt 감속`],
+      [`${cs}, turn left heading ${digits(String(Math.round(((s.arrEnd?.hdg ?? 0) + 330) % 360 / 10) * 10).padStart(3, '0'))}, cleared ILS approach runway ${rwySay(rwy)}`, `Cleared ILS ${rwySay(rwy)}, ${cs}`, `${csTxt} ILS 접근 허가`]]);
+    if (!pair) return;
+    this.tx('atc', pair[0], pair[2], undefined, st);
+    this.tx('other', pair[1], '', undefined, csTxt, voice);
   }
   private atc(text: string, ko: string, after?: () => void) { this.tx('atc', `${csSay(this.s.callsign)}, ${text}`, ko, after); }
   private pilot(text: string, ko: string, after?: () => void) { this.tx('pilot', `${text}, ${csSay(this.s.callsign)}`, ko, after); }
@@ -100,7 +155,7 @@ export class Atc {
 
   private clearance() {
     const s = this.s, dest = s.arr ?? s.dep;
-    this.pilot(`${this.freq.station}, request IFR clearance to ${digits(dest.icao)}`, `${dest.icao}까지 IFR 허가 요청합니다`);
+    this.pilot(`${this.freq.station}, ${this.s.stand ? `stand ${digits(this.s.stand.ref)}, ` : ''}information ${NATO[this.atis]}, request IFR clearance to ${digits(dest.icao)}`, `ATIS ${this.atis} 수신, ${dest.icao}까지 IFR 허가 요청합니다`);
     this.atc(`cleared to ${digits(dest.icao)} via flight planned route, runway ${rwySay(s.depEnd.ident)}, climb via SID to ${flSay(5000)}, expect ${flSay(s.cruiseFt)} ten minutes after departure, departure frequency ${freqSay(this.mhz('DEP', s.dep))}, squawk ${digits(this.squawk)}`,
       `${dest.icao}까지 비행계획 경로로 허가. 활주로 ${s.depEnd.ident}, 5,000 ft까지 상승, 출발 10분 후 ${flText(s.cruiseFt)} 예상, 출발 관제 ${this.mhz('DEP', s.dep)}, 스쿼크 ${this.squawk}`);
     this.pilot(`Cleared to ${digits(dest.icao)}, runway ${rwySay(s.depEnd.ident)}, ${flSay(5000)}, squawk ${digits(this.squawk)}`, '허가 복창');
@@ -121,8 +176,9 @@ export class Atc {
     void layout;
     this.pilot(`${this.freq.station}, request taxi`, '택시 요청합니다');
     const via = this.taxiVia ? ` via ${this.taxiVia.split(' ').map(digits).join(', ')}` : '';
-    this.atc(`taxi to holding point runway ${rwySay(s.depEnd.ident)}${via}, hold short runway ${rwySay(s.depEnd.ident)}`,
-      `활주로 ${s.depEnd.ident} 대기 지점까지 택시${this.taxiVia ? ` (경유 ${this.taxiVia})` : ''}, 활주로 진입 전 대기`, () => { this.phase = 'taxi'; });
+    const qnh = Math.round(s.qnh?.() ?? 1013);
+    this.atc(`taxi to holding point runway ${rwySay(s.depEnd.ident)}${via}, hold short runway ${rwySay(s.depEnd.ident)}, QNH ${digits(String(qnh))}`,
+      `활주로 ${s.depEnd.ident} 대기 지점까지 택시${this.taxiVia ? ` (경유 ${this.taxiVia})` : ''}, 활주로 진입 전 대기, QNH ${qnh}`, () => { this.phase = 'taxi'; });
     this.pilot(`Taxi to holding point runway ${rwySay(s.depEnd.ident)}${via}, hold short`, '택시 지시 복창');
   }
   /** Taxiway names for the taxi instruction (set once the airport layout is known). */
@@ -162,6 +218,12 @@ export class Atc {
     const now = performance.now();
     if (this.queue.length && now > this.busyUntil) this.queue.shift()!();
     if (this.queue.length) return;
+    // a busy frequency: other traffic now and then while we're quiet
+    if (now > this.nextChatter && now > this.busyUntil + 2500 && this.phase !== 'done') {
+      this.nextChatter = now + 22000 + Math.random() * 38000;
+      this.chatter();
+      return;
+    }
     const s = this.s, ac = this.ac, ft = ac.alt / FT, agl = ac.agl / FT;
     const dest = s.arr, thr = s.arrEnd;
     const distArr = dest ? distance(ac, dest) / NM : Infinity;

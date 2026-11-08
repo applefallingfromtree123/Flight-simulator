@@ -490,3 +490,5 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 #menu header h1 span { background: linear-gradient(90deg, #4fc3f7, #7c4dff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 
 .hh-tip > span { position: relative; z-index: 1; background: #0b111a; box-shadow: 10px 0 10px #0b111a; padding-right: 6px; }
+
+.atc-log .other { opacity: .62; } .atc-log .other b { color: #9fb3c8; }

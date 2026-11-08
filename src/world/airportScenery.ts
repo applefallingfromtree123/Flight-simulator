@@ -11,6 +11,7 @@ import { runwayInfluence, type Airport, type AirportDB } from './airports.ts';
 import type { ElevationService } from './terrain.ts';
 import { airportLayout, airportScenery, genPlan, type AirportLayout, type OsmWay, type SceneryData, type Stand } from './gates.ts';
 import { Part, box, cyl, writeGlb, type NodeDef, type P3 } from './modelBuilder.ts';
+import { buildSignsGlb, sockAngles } from './airportSigns.ts';
 
 type XY = [number, number];  // local metres: x north, y east
 
@@ -42,6 +43,12 @@ export class AirportScenery {
   /** Trees (woods from OpenStreetMap, or belts around a generated airport) swaying in the wind. */
   private trees: Cesium.Model | null = null;
   private treeShader: Cesium.CustomShader | null = null;
+  /** Taxiway / runway signs and windsocks. */
+  private signs: Cesium.Model | null = null;
+  private socks: { node: string; pos: P3 }[] = [];
+  /** How many signs went up (diagnostics / tests). */
+  signCount = 0;
+  signSpots: LatLon[] = [];
   /** How many trees were planted, and where one of them is (diagnostics / tests). */
   treeInfo: { n: number; sample: LatLon } | null = null;
   /** Tree budget from the graphics quality (0 = none). */
@@ -91,6 +98,7 @@ export class AirportScenery {
         sh.setUniform('u_dir', new Cesium.Cartesian2(-Math.sin(to), Math.cos(to)));   // glTF frame: x = west, z = north
       }
     }
+    this.updateSigns();
     if (this.model?.ready && night !== this.night) {
       this.night = night;
       const d = this.model.getNode('glass'), n = this.model.getNode('glassLit');
@@ -132,6 +140,8 @@ export class AirportScenery {
     this.gen++;
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; this.onModel(null); }
     if (this.trees) { this.scene.primitives.remove(this.trees); this.trees = null; }
+    if (this.signs) { this.scene.primitives.remove(this.signs); this.signs = null; }
+    this.socks = []; this.signCount = 0;
     if (this.ground) { this.scene.groundPrimitives.remove(this.ground); this.ground = null; }
     this.jetways = [];
     this.origin = null;
@@ -167,10 +177,43 @@ export class AirportScenery {
     });
     try { this.buildGround(data, layout, frame, apt, this.lastOffset); } catch (e) { console.warn('airport ground', e); }
     try { await this.buildModel(data, layout, frame, apt, gen); } catch (e) { console.warn('airport buildings', e); }
+    try { await this.buildSigns(data, frame, apt, gen); } catch (e) { console.warn('airport signs', e); }
     try { await this.buildTrees(osm ?? data, data, frame, apt, gen); } catch (e) { console.warn('airport trees', e); }
     const w = this.waiters.get(apt.icao);
     this.waiters.delete(apt.icao);
     w?.forEach(f => f());
+  }
+
+  // ─────────── signs and windsocks ───────────
+  private async buildSigns(d: SceneryData, f: Frame, apt: Airport, gen: number) {
+    const set = await buildSignsGlb(d, apt, f);
+    if (!set || gen !== this.gen) return;
+    const url = URL.createObjectURL(new Blob([set.glb], { type: 'model/gltf-binary' }));
+    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
+    if (gen !== this.gen) { model.destroy(); URL.revokeObjectURL(url); return; }
+    this.signs = this.scene.primitives.add(model);
+    this.socks = set.socks;
+    this.signCount = set.count;
+    this.signSpots = set.spots.map(p => f.ll(p));
+    this.placeOn(model);
+    model.readyEvent.addEventListener(() => URL.revokeObjectURL(url));
+  }
+  private updateSigns() {
+    const m = this.signs;
+    if (!m) return;
+    m.show = !this.off.model;
+    if (this.origin) { if (this.model) Cesium.Matrix4.clone(this.model.modelMatrix, m.modelMatrix); else this.placeOn(m); }
+    if (!m.ready || !m.show) return;
+    const t = (performance.now() - this.t0) / 1000;
+    const kt = this.wind.spd + this.wind.gust * 0.5 * (0.5 + 0.5 * Math.sin(t * 0.6));
+    this.socks.forEach((s, i) => {
+      const n = m.getNode(s.node);
+      if (!n) return;
+      const a = sockAngles(this.wind.dir, kt, t + i * 1.7);
+      // glTF frame: x = west, y = up, z = north (P3 x north, y east, z down -> -y, -z, x)
+      const rot = Cesium.Matrix3.multiply(Cesium.Matrix3.fromRotationY(a.yaw), Cesium.Matrix3.fromRotationX(a.pitch), new Cesium.Matrix3());
+      n.matrix = Cesium.Matrix4.fromRotationTranslation(rot, new Cesium.Cartesian3(-s.pos[1], -s.pos[2], s.pos[0]));
+    });
   }
 
   // ─────────── trees ───────────
