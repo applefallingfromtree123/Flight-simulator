@@ -4,6 +4,7 @@
 import * as Cesium from 'cesium';
 import type { Aircraft } from '../sim/fdm.ts';
 import { FT, KT } from '../core/math.ts';
+import { VolumetricClouds } from './volclouds.ts';
 
 const PRECIP_FS = /* glsl */ `
 uniform sampler2D colorTexture;
@@ -155,7 +156,7 @@ export class Effects {
   private trailT = 0;
   private u = { time: 0, intensity: 0, snow: 0, cockpit: 0, airspeed: 0 };
   /** Switched off after render errors (see World.handleRenderError). */
-  off = { precip: false, flare: false, trails: false, wash: false, flash: false, grade: false };
+  off = { precip: false, flare: false, trails: false, wash: false, flash: false, grade: false, vol: false };
   private wash: Cesium.Primitive | null = null;
   private washMat: Cesium.Material | null = null;
   private spray: Cesium.ParticleSystem | null = null;
@@ -164,9 +165,10 @@ export class Effects {
   private nextFlash = 0;
   /** Called on a lightning strike with the delay of its thunder (s). */
   onThunder: (delay: number) => void = () => {};
-  disable(k: 'precip' | 'flare' | 'trails' | 'wash' | 'flash' | 'grade') {
+  disable(k: 'precip' | 'flare' | 'trails' | 'wash' | 'flash' | 'grade' | 'vol') {
     this.off[k] = true;
     if (k === 'grade' && this.grade) this.grade.enabled = false;
+    if (k === 'vol') { this.vol.enabled = false; this.vol.stage.enabled = false; }
     if (k === 'wash') { if (this.wash) this.wash.show = false; if (this.spray) this.spray.show = false; }
     if (k === 'flash' && this.flashStage) this.flashStage.enabled = false;
     if (k === 'precip') this.precip.enabled = false;
@@ -183,9 +185,12 @@ export class Effects {
     this.g.sharp = [0, 0.45, 0.6, 0.7][tier] ?? 0.55;
   }
 
+  /** Ray-marched volumetric clouds (before the colour grade so they get graded too). */
+  vol: VolumetricClouds;
   constructor(private scene: Cesium.Scene) {
     const u = this.u;
     const g = this.g;
+    this.vol = new VolumetricClouds(scene);
     this.grade = scene.postProcessStages.add(new Cesium.PostProcessStage({
       name: 'sky_grade', fragmentShader: GRADE_FS,
       uniforms: { sharp: () => g.sharp, sat: () => g.sat, contrast: () => g.contrast, warmth: () => g.warmth, vignette: () => g.vignette },

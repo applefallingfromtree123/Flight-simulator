@@ -571,6 +571,7 @@ export class World {
     brightenSkyLight(this.model, 1.9);
     this.setupWingFlex(ac);
     this.propAngle = this.modelNodes!.props.map(() => 0);
+    await this.buildPropDiscs(ac);
     this.buildAircraftLights(ac);
     this.chaseQ = null;
     // the real cockpit: interior mesh + its displays drawn live (falls back to the procedural flight deck)
@@ -663,6 +664,7 @@ export class World {
     }
     const nodes = this.modelNodes!;
     this.updateWingFlex(ac, dt);
+    this.updatePropDiscs(ac, dt);
     if (this.fg && this.model.ready) { this.updateFgModel(ac, dt); this.updateLive(); }
     else if (this.model.ready) {
       const gear = nodes.gear.length ? this.model.getNode('gear') : undefined;
@@ -793,6 +795,92 @@ export class World {
     sh.setUniform('u_airToEye', a2e);
     sh.setUniform('u_eyeToAir', Cesium.Matrix4.inverse(a2e, new Cesium.Matrix4()));
     sh.setUniform('u_flex', new Cesium.Cartesian4(this.flex.x, this.flex.half, this.flex.root, this.flex.tailZ));
+  }
+
+  // ───────────────────────── propeller discs ─────────────────────────
+  /**
+   * A spinning propeller is a blur, not a set of blades: each propeller gets a translucent disc with sweeping
+   * blade streaks and a tip ring, fading in with RPM — also on real models whose blades can't rotate on their own.
+   */
+  private propDiscs: { prim: Cesium.Primitive; mat: Cesium.Material; pos: Cesium.Cartesian3; r: number; engine: number; dir: number; angle: number }[] = [];
+  private clearPropDiscs() {
+    for (const d of this.propDiscs) this.scene.primitives.remove(d.prim);
+    this.propDiscs = [];
+  }
+  private async buildPropDiscs(ac: Aircraft) {
+    this.clearPropDiscs();
+    const d = ac.def;
+    if (ac.isRotor || !(d.eng.t === 'prop' || d.eng.t === 'tprop') || !d.eng.propD) return;
+    const R = d.eng.propD / 2;
+    // prop hub positions in the model frame (fwd, left, up), CG at the origin
+    let hubs: { p: Cesium.Cartesian3; dir: number }[] = [];
+    const fg = this.fg;
+    const fgProps = fg ? fg.m.spins.filter(s => s.kind === 'prop') : [];
+    if (fg && fgProps.length) {
+      // a hub per cluster of prop pivots (some models spin each blade about its own feathering axis)
+      const o = fg.off, groups: { x: number; y: number; z: number; n: number; dir: number }[] = [];
+      for (const sp of fgProps) {
+        const [x, y, z] = sp.pivot;
+        const g = groups.find(q => Math.hypot(q.x / q.n - x, q.y / q.n - y) < 1.2);
+        if (g) { g.x += x; g.y += y; g.z += z; g.n++; } else groups.push({ x, y, z, n: 1, dir: sp.axis[2] >= 0 ? 1 : -1 });
+      }
+      hubs = groups.map(g => ({ p: new Cesium.Cartesian3(g.z / g.n + o.z + 0.15, g.x / g.n + o.x, g.y / g.n + o.y), dir: g.dir }));
+    } else {
+      // procedural model (or a real model whose blades are part of the airframe): where SkyLine's own model puts them
+      const props = fg ? (await buildAircraftGlb(d, ac.aero, getLivery(d), 0.25)).nodes.props : this.modelNodes!.props;
+      hubs = props.filter(p => p.axis === 'x').map(p => ({ p: new Cesium.Cartesian3(p.pos[0] + 0.12, -p.pos[1], -p.pos[2]), dir: p.dir }));
+      // a real single-engine model: the hub is at its nose, wherever our simplified model would put it
+      if (fg && d.eng.n === 1 && hubs[0]) hubs[0].p.x = fg.m.bounds.max[2] + fg.off.z - 0.3;
+    }
+    const quad = () => new Cesium.Geometry({
+      attributes: {
+        position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: new Float64Array([0, -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1]) }),
+        normal: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: new Float32Array([1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0]) }),
+        st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2, values: new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]) }),
+      } as unknown as Cesium.GeometryAttributes,
+      indices: new Uint16Array([0, 1, 2, 0, 2, 3]), primitiveType: Cesium.PrimitiveType.TRIANGLES,
+      boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 1.5),
+    });
+    hubs.forEach((h, i) => {
+      const mat = new Cesium.Material({ translucent: true, fabric: {
+        uniforms: { angle: 0, blades: d.eng.blades ?? 3, alpha: 0, tint: new Cesium.Color(0.12, 0.12, 0.13, 1) },
+        source: `
+          uniform float angle; uniform float blades; uniform float alpha; uniform vec4 tint;
+          czm_material czm_getMaterial(czm_materialInput mi) {
+            czm_material m = czm_getDefaultMaterial(mi);
+            vec2 p = mi.st * 2.0 - 1.0;
+            float r = length(p);
+            float th = atan(p.y, p.x);
+            float sweep = pow(0.5 + 0.5 * cos(blades * (th - angle)), 5.0);    // blades smeared into streaks
+            float ring = smoothstep(0.9, 0.96, r) * (1.0 - smoothstep(0.97, 1.0, r));
+            float body = (1.0 - smoothstep(0.9, 1.0, r)) * smoothstep(0.1, 0.2, r);
+            m.diffuse = mix(tint.rgb, vec3(0.75), ring * 0.6);
+            m.alpha = clamp(alpha * (body * (0.28 + 0.72 * sweep) + ring * 0.9), 0.0, 0.8);
+            return m;
+          }` } });
+      const prim = this.scene.primitives.add(new Cesium.Primitive({
+        geometryInstances: new Cesium.GeometryInstance({ geometry: quad() }),
+        appearance: new Cesium.MaterialAppearance({ material: mat, translucent: true, flat: true, faceForward: false, closed: false,
+          renderState: { cull: { enabled: false }, depthMask: false, blending: Cesium.BlendingState.ALPHA_BLEND } }),
+        asynchronous: false, allowPicking: false, compressVertices: false, show: false,
+      })) as Cesium.Primitive;
+      this.propDiscs.push({ prim, mat, pos: h.p, r: R, engine: Math.min(i, ac.engines.length - 1), dir: h.dir, angle: 0 });
+    });
+  }
+  private updatePropDiscs(ac: Aircraft, dt: number) {
+    for (const pd of this.propDiscs) {
+      const e = ac.engines[pd.engine];
+      const rpm = !e ? 0 : e.def.t === 'tprop' ? e.np * 12 : e.rpm;
+      const a = Math.min(1, Math.max(0, (rpm - 250) / 900));
+      pd.prim.show = a > 0.02 && !!this.model?.show;
+      if (!pd.prim.show) continue;
+      // the eye sees a slow wagon-wheel drift, not the real 40 rev/s
+      pd.angle = (pd.angle - pd.dir * dt * (1.2 + a * 2.2)) % (Math.PI * 2);
+      const u = pd.mat.uniforms as Record<string, unknown>;
+      u.angle = pd.angle; u.alpha = 0.55 * a;
+      const m = Cesium.Matrix4.multiply(this.acMatrix, Cesium.Matrix4.fromTranslation(pd.pos), new Cesium.Matrix4());
+      Cesium.Matrix4.multiplyByUniformScale(m, pd.r, pd.prim.modelMatrix);
+    }
   }
 
   /** Gear/flap poses (show the nearest pre-posed node) and spinning props/rotors of a FlightGear model. */
@@ -942,6 +1030,12 @@ export class World {
   }
 
   // ───────────────────────── weather: clouds, fog, time ─────────────────────────
+  /** Volumetric clouds replace the billboard clouds (medium quality and up). */
+  updateVolClouds(w: WeatherState) {
+    const to = (w.windAloftDir + 180) * Math.PI / 180, ms = w.windAloftSpd * 0.5144;
+    this.effects.vol.update(this.scene, w.clouds, { e: ms * Math.sin(to), n: ms * Math.cos(to) }, this.tier, this.geoidOffset);
+    this.clouds.show = !this.effects.vol.stage.enabled;
+  }
   updateWeather(w: WeatherState, ac: { lat: number; lon: number }, force = false) {
     const key = JSON.stringify(w.clouds);
     const need = force || !this.cloudsAt || this.cloudsAt.key !== key || distance(this.cloudsAt, ac) > 12000;
@@ -1144,6 +1238,7 @@ export class World {
     { name: '비행운', off: () => this.effects.disable('trails') },
     { name: '물보라·먼지', off: () => this.effects.disable('wash') },
     { name: '번개', off: () => this.effects.disable('flash') },
+    { name: '볼류메트릭 구름', off: () => { this.effects.disable('vol'); this.clouds.show = true; } },
     { name: '색보정·선명화', off: () => this.effects.disable('grade') },
     { name: '탑승교·계단차 모델', off: () => { this.groundModelsOff = true; for (const o of this.groundObjects) (o as { show?: boolean }).show = false; } },
     { name: '그림자', off: () => { this.viewer.shadows = false; } },

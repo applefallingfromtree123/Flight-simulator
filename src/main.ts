@@ -1035,6 +1035,7 @@ class App {
     w.updateAirportLights(ac, night, { lat: ac.lat, lon: ac.lon, alt: ac.alt });
     w.runways.setWet(this.weather.precip > 0);
     w.scenery.wind = { dir: this.weather.windDir, spd: this.weather.windSpd, gust: this.weather.gust };
+    w.updateVolClouds(this.weather);
     this.wxT -= dtReal;
     if (this.wxT <= 0) { this.wxT = 2; w.updateWeather(this.weather, ac); }
     // weather effects
