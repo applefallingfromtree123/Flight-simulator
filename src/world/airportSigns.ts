@@ -5,7 +5,7 @@
 import type { Airport, Runway } from './airports.ts';
 import type { OsmWay, SceneryData } from './gates.ts';
 import { canvasImage } from './liveryTex.ts';
-import { Part, cyl, writeGlb, type NodeDef, type P3 } from './modelBuilder.ts';
+import { Part, box, cyl, writeGlb, type NodeDef, type P3 } from './modelBuilder.ts';
 
 type XY = [number, number];  // local metres: x north, y east
 type Seg = { k: 'mand' | 'loc' | 'dir' | 'dist'; t: string };
@@ -60,7 +60,7 @@ const arrow = (rel: number) => {
 
 export interface SignSet { glb: ArrayBuffer; socks: { node: string; pos: P3 }[]; count: number; spots: XY[] }
 
-export async function buildSignsGlb(d: SceneryData, apt: Airport, f: SignFrame): Promise<SignSet | null> {
+export async function buildSignsGlb(d: SceneryData, apt: Airport, f: SignFrame, poles: { p: XY; h: number; road: boolean }[] = []): Promise<SignSet | null> {
   const atlas = new Atlas();
   const face = new Part('#ffffff', 0, 0.6); face.tex = 0;
   const frame = new Part('#2e3134', 0.3, 0.6), leg = new Part('#8a8f94', 0.6, 0.4);
@@ -250,7 +250,25 @@ export async function buildSignsGlb(d: SceneryData, apt: Airport, f: SignFrame):
     nodesOut.push({ name: 'sockPoles', parts: [pole, base] });
   }
 
-  if (!face.idx.length && !socks.length) return null;
+  // flood-light masts and street lights
+  const mast = new Part('#9ca2a7', 0.7, 0.4), lamp = new Part('#2a2d30', 0.5, 0.5), lens = new Part('#fff4dc', 0, 0.3, 1, '#ffe2b0');
+  for (const q of poles) {
+    const g = f.groundAt([q.p]), [x, y] = q.p, top = -(g + q.h);
+    if (q.road) {
+      cyl(mast, [x, y, -g], [x, y, top], 0.09, 0.06, 6, false, true);
+      box(lamp, [x, y, top + 0.05], [0.9, 0.35, 0.15]);
+      box(lens, [x, y, top + 0.14], [0.7, 0.25, 0.03]);
+    } else {
+      cyl(mast, [x, y, -g], [x, y, top], 0.32, 0.18, 8, false, true);
+      // head frame with a row of lamps
+      box(lamp, [x, y, top - 0.6], [2.4, 2.4, 1.2]);
+      box(lens, [x, y, top + 0.02], [2.2, 2.2, 0.05]);
+    }
+  }
+  const lampNode: NodeDef = { name: 'lamps', parts: [mast, lamp, lens].filter(p => p.idx.length) };
+  if (lampNode.parts.length) nodesOut.push(lampNode);
+
+  if (!face.idx.length && !socks.length && !lampNode.parts.length) return null;
   const main: NodeDef = { name: 'signs', parts: [face, frame, leg].filter(p => p.idx.length) };
   const img = await canvasImage(atlas.cv, 'image/png');
   return { glb: writeGlb([main, ...nodesOut], [img]), socks, count, spots: [...placed, ...socks.map(s => [s.pos[0], s.pos[1]] as XY)] };

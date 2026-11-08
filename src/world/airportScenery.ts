@@ -52,6 +52,21 @@ export class AirportScenery {
   /** Taxiway centre lines (for the taxiway lights) and a counter that changes when they do. */
   taxiLines: { pts: LatLon[]; w: number }[] = [];
   taxiGen = 0;
+  /** Flood-light masts (apron) and street lights (roads): lamp positions (MSL) for the scene's night lights. */
+  floods: { lat: number; lon: number; top: number; r: number; road: boolean }[] = [];
+  floodGen = 0;
+  /** 0 by day .. 1 at night: buildings get a soft floodlit glow. */
+  nightLevel = 0;
+  private glowShader = new Cesium.CustomShader({
+    uniforms: { u_glow: { type: Cesium.UniformType.FLOAT, value: 0 } },
+    lightingModel: Cesium.LightingModel.PBR,
+    // floodlit at night: a warm sodium wash on everything, more on the lower parts lit from the apron
+    fragmentShaderText: `
+      void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
+        vec3 warm = vec3(1.0, 0.82, 0.6);
+        material.emissive += material.diffuse * warm * u_glow;
+      }`,
+  });
   /** How many trees were planted, and where one of them is (diagnostics / tests). */
   treeInfo: { n: number; sample: LatLon } | null = null;
   /** Tree budget from the graphics quality (0 = none). */
@@ -102,6 +117,7 @@ export class AirportScenery {
       }
     }
     this.updateSigns();
+    this.glowShader.setUniform('u_glow', this.nightLevel * 0.32);
     if (this.model?.ready && night !== this.night) {
       this.night = night;
       const d = this.model.getNode('glass'), n = this.model.getNode('glassLit');
@@ -146,6 +162,7 @@ export class AirportScenery {
     if (this.signs) { this.scene.primitives.remove(this.signs); this.signs = null; }
     this.socks = []; this.signCount = 0;
     if (this.taxiLines.length) { this.taxiLines = []; this.taxiGen++; }
+    if (this.floods.length) { this.floods = []; this.floodGen++; }
     if (this.ground) { this.scene.groundPrimitives.remove(this.ground); this.ground = null; }
     this.jetways = [];
     this.origin = null;
@@ -182,6 +199,7 @@ export class AirportScenery {
     try { this.buildGround(data, layout, frame, apt, this.lastOffset); } catch (e) { console.warn('airport ground', e); }
     try { await this.buildModel(data, layout, frame, apt, gen); } catch (e) { console.warn('airport buildings', e); }
     this.taxiLines = data.taxiways.filter(w => w.tags.aeroway !== 'taxilane').map(w => ({ pts: w.pts, w: 23 })); this.taxiGen++;
+    try { this.planFloods(data, frame, apt); } catch (e) { console.warn('airport floods', e); }
     try { await this.buildSigns(data, frame, apt, gen); } catch (e) { console.warn('airport signs', e); }
     try { await this.buildTrees(osm ?? data, data, frame, apt, gen); } catch (e) { console.warn('airport trees', e); }
     const w = this.waiters.get(apt.icao);
@@ -189,12 +207,61 @@ export class AirportScenery {
     w?.forEach(f => f());
   }
 
+  // ─────────── night: apron flood-light masts and street lights ───────────
+  private poles: { p: XY; h: number; road: boolean }[] = [];
+  private planFloods(d: SceneryData, f: Frame, apt: Airport) {
+    const poles: { p: XY; h: number; road: boolean }[] = [];
+    const blocked = d.buildings.map(w => f.ring(w.pts)).filter(r => r.length >= 3);
+    const clearOf = (p: XY) => !blocked.some(r => inside(r, p)) && poles.every(q => Math.hypot(q.p[0] - p[0], q.p[1] - p[1]) > 40);
+    // masts round the edge of every apron, ~100 m apart, set 4 m in from the edge (25 m tall)
+    for (const w of d.aprons) {
+      const r = f.ring(w.pts);
+      if (r.length < 3) continue;
+      const c = centroid(r);
+      for (let i = 0; i < r.length && poles.length < 220; i++) {
+        const a = r[i], b = r[(i + 1) % r.length], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        for (let s = 0; s < l; s += 100) {
+          const q: XY = [a[0] + (b[0] - a[0]) * s / l, a[1] + (b[1] - a[1]) * s / l];
+          const dc = Math.hypot(c[0] - q[0], c[1] - q[1]) || 1;
+          const p: XY = [q[0] + (c[0] - q[0]) / dc * 4, q[1] + (c[1] - q[1]) / dc * 4];
+          if (clearOf(p)) poles.push({ p, h: 25, road: false });
+        }
+      }
+    }
+    // generated airports without aprons: masts around the stands
+    if (!d.aprons.length) for (const t of d.taxiways.slice(0, 12)) {
+      const r = t.pts.map(q => f.xy(q));
+      for (let i = 1; i < r.length && poles.length < 120; i++) {
+        const a = r[i - 1], b = r[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        for (let s = 0; s < l; s += 140) { const p: XY = [a[0] + (b[0] - a[0]) * s / l + 30, a[1] + (b[1] - a[1]) * s / l + 30]; if (clearOf(p)) poles.push({ p, h: 22, road: false }); }
+      }
+    }
+    // street lights along the landside roads, every 45 m on one side (10 m)
+    let roads = 0;
+    for (const w of d.roads) {
+      const r = w.pts.map(q => f.xy(q));
+      for (let i = 1; i < r.length && roads < 260; i++) {
+        const a = r[i - 1], b = r[i], l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+        if (l < 1) continue;
+        const n: XY = [-(b[1] - a[1]) / l, (b[0] - a[0]) / l];
+        for (let s = 0; s < l; s += 45) {
+          const p: XY = [a[0] + (b[0] - a[0]) * s / l + n[0] * 7, a[1] + (b[1] - a[1]) * s / l + n[1] * 7];
+          if (!blocked.some(rr => inside(rr, p))) { poles.push({ p, h: 10, road: true }); roads++; }
+        }
+      }
+    }
+    this.poles = poles;
+    this.floods = poles.map(q => { const ll = f.ll(q.p); return { lat: ll.lat, lon: ll.lon, top: apt.elev + f.groundAt([q.p]) + q.h, r: q.road ? 16 : 55, road: q.road }; });
+    this.floodGen++;
+  }
+
   // ─────────── signs and windsocks ───────────
   private async buildSigns(d: SceneryData, f: Frame, apt: Airport, gen: number) {
-    const set = await buildSignsGlb(d, apt, f);
+    const set = await buildSignsGlb(d, apt, f, this.poles);
     if (!set || gen !== this.gen) return;
     const url = URL.createObjectURL(new Blob([set.glb], { type: 'model/gltf-binary' }));
-    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
+    // signs are lit from inside at night: the same glow as the buildings
+    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, customShader: this.glowShader });
     if (gen !== this.gen) { model.destroy(); URL.revokeObjectURL(url); return; }
     this.signs = this.scene.primitives.add(model);
     this.socks = set.socks;
@@ -497,7 +564,7 @@ export class AirportScenery {
     const nodes = [bldNode, glassNode, litNode, towerNode, ...jwNodes].filter(n => n.parts.some(p => p.idx.length));
     if (!nodes.length) return;
     const url = URL.createObjectURL(new Blob([writeGlb(nodes)], { type: 'model/gltf-binary' }));
-    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false });
+    const model = await Cesium.Model.fromGltfAsync({ url, shadows: Cesium.ShadowMode.ENABLED, backFaceCulling: false, customShader: this.glowShader });
     if (gen !== this.gen) { model.destroy(); URL.revokeObjectURL(url); return; }
     model.show = !this.off.model;
     this.model = this.scene.primitives.add(model);

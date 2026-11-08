@@ -107,6 +107,11 @@ export class World {
   private acLights: Cesium.PointPrimitive[] = [];
   private rwyLights: Cesium.BillboardCollection;
   private taxiLights: Cesium.BillboardCollection;
+  /** Apron flood lights and street lights: lamp glows, and pools of light on the ground under them. */
+  private floodLights: Cesium.BillboardCollection;
+  private floodPools: Cesium.GroundPrimitive | null = null;
+  private floodGen = -1;
+  private floodOff = false;
   private papi: { p: Cesium.Billboard; pos: { lat: number; lon: number; h: number }; thr: number; end: RunwayEnd }[] = [];
   private rwyLightsAt: { lat: number; lon: number } | null = null;
   private clouds: Cesium.CloudCollection;
@@ -176,6 +181,7 @@ export class World {
     this.lights = s.primitives.add(new Cesium.PointPrimitiveCollection());
     this.rwyLights = s.primitives.add(new Cesium.BillboardCollection({ scene: s }));
     this.taxiLights = s.primitives.add(new Cesium.BillboardCollection({ scene: s }));
+    this.floodLights = s.primitives.add(new Cesium.BillboardCollection({ scene: s }));
     this.clouds = s.primitives.add(new Cesium.CloudCollection({ noiseDetail: 16 }));
     this.routeLines = s.primitives.add(new Cesium.PolylineCollection());
     this.runways = new RunwayRenderer(s, db);
@@ -389,7 +395,7 @@ export class World {
     const now = performance.now();
     if (now - this.geoidT < 700 || ac.agl > 60) return;
     this.geoidT = now;
-    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, this.taxiLights, this.sceneryModel, ...this.groundObjects].filter(Boolean) as object[];
+    const exclude = [this.model, this.fg?.interior, this.runways.primitive, this.cockpit3d.model, this.lights, this.rwyLights, this.taxiLights, this.floodLights, this.floodPools, this.sceneryModel, ...this.groundObjects].filter(Boolean) as object[];
     const N = geoidHeight(ac.lat, ac.lon);
     const res: number[] = [];
     // centre and four points a wingspan-ish away: the lower ones are the ground, not a roof or a jet bridge
@@ -974,7 +980,9 @@ export class World {
     this.runways.setDrape(!!(this.tileset && this.tileset.show));
     this.runways.update(ac.lat, ac.lon);
     this.scenery.tilesShown = !!(this.tileset && this.tileset.show);
+    this.scenery.nightLevel = night;
     this.scenery.update(ac.lat, ac.lon, this.geoidOffset, night > 0.5);
+    this.updateFloods(night);
     const moved = !this.rwyLightsAt || distance(this.rwyLightsAt, ac) > 6000;
     if (moved && this.db.ready) {
       this.rwyLightsAt = { lat: ac.lat, lon: ac.lon };
@@ -1050,6 +1058,42 @@ export class World {
     }) as Cesium.Billboard & { base: number; col: Cesium.Color; day?: boolean };
     b.base = size; b.col = color; b.day = day;
     return b;
+  }
+  /** Apron masts and street lights: glowing lamp heads and warm pools of light on the ground, on from dusk. */
+  private updateFloods(night: number) {
+    if (this.scenery.floodGen !== this.floodGen) {
+      this.floodGen = this.scenery.floodGen;
+      this.floodLights.removeAll();
+      if (this.floodPools) { this.scene.groundPrimitives.remove(this.floodPools); this.floodPools = null; }
+      const fl = this.scenery.floods;
+      if (fl.length) {
+        const sodium = Cesium.Color.fromCssColorString('#ffcf8a'), led = Cesium.Color.fromCssColorString('#fff2dc');
+        for (const f of fl) {
+          this.floodLights.add({
+            image: this.glow(), position: Cesium.Cartesian3.fromDegrees(f.lon, f.lat, f.top + this.geoidOffset),
+            color: f.road ? sodium : led, width: f.road ? 22 : 44, height: f.road ? 22 : 44,
+            scaleByDistance: new Cesium.NearFarScalar(100, 1.4, 15000, 0.3), translucencyByDistance: new Cesium.NearFarScalar(12000, 1, 25000, 0),
+          });
+        }
+        // the pools: concentric discs, brighter in the middle (alpha adds up)
+        const inst: Cesium.GeometryInstance[] = [];
+        for (const f of fl) for (const [k, a] of [[1, 0.045], [0.82, 0.05], [0.64, 0.06], [0.46, 0.07], [0.28, 0.08]] as [number, number][]) {
+          inst.push(new Cesium.GeometryInstance({
+            geometry: new Cesium.EllipseGeometry({ center: Cesium.Cartesian3.fromDegrees(f.lon, f.lat), semiMajorAxis: f.r * k, semiMinorAxis: f.r * k, granularity: Cesium.Math.toRadians(4) }),
+            attributes: { color: Cesium.ColorGeometryInstanceAttribute.fromColor((f.road ? Cesium.Color.fromCssColorString('#ffb860') : Cesium.Color.fromCssColorString('#fff0d0')).withAlpha(a)) },
+          }));
+        }
+        if (!this.floodOff) try {
+          this.floodPools = this.scene.groundPrimitives.add(new Cesium.GroundPrimitive({
+            geometryInstances: inst, appearance: new Cesium.PerInstanceColorAppearance({ flat: true, translucent: true }),
+            classificationType: Cesium.ClassificationType.BOTH, asynchronous: true,
+          }));
+        } catch (e) { console.warn('flood pools', e); }
+      }
+    }
+    const on = night > 0.3 && !this.scenery.off.model;
+    this.floodLights.show = on;
+    if (this.floodPools) this.floodPools.show = on;
   }
   private buildRunwayLights(rw: Runway) {
     const ends: [RunwayEnd, RunwayEnd][] = [[rw.le, rw.he], [rw.he, rw.le]];
@@ -1413,6 +1457,7 @@ export class World {
   disabledLayers: string[] = [];
   private suspects: { name: string; off: () => void }[] = [
     { name: '렌즈 플레어', off: () => this.effects.disable('flare') },
+    { name: '공항 야간 조명', off: () => { this.floodOff = true; if (this.floodPools) { this.scene.groundPrimitives.remove(this.floodPools); this.floodPools = null; } } },
     { name: '공항 바닥 표시', off: () => this.scenery.disable('ground') },
     { name: '공항 건물·탑승교', off: () => this.scenery.disable('model') },
     { name: '비·눈 효과', off: () => this.effects.disable('precip') },
