@@ -15,7 +15,7 @@ import { Controls } from './input/controls.ts';
 import { Sound } from './audio/sound.ts';
 import { Menu, type FlightConfig } from './ui/menu.ts';
 import { Cockpit } from './ui/cockpit.ts';
-import { CockpitClick } from './ui/cockpitClick.ts';
+import { CockpitClick, type ZoneItem } from './ui/cockpitClick.ts';
 import { HUD } from './avionics/hud.ts';
 import { TouchControls } from './ui/touch.ts';
 import type { AvData } from './avionics/common.ts';
@@ -63,7 +63,72 @@ class App {
   // flight
   ac: Aircraft | null = null;
   fcs!: FCS; sys!: Systems; cockpit!: Cockpit; av!: AvData;
-  private ckClick = new CockpitClick(() => this.cockpit ?? null, () => this.fcs ?? null, () => this.sound.chime([1800], 0.025));
+  private ckClick = new CockpitClick(() => this.cockpit ?? null, () => this.fcs ?? null, () => this.sound.chime([1800], 0.025), z => this.zoneSpec(z));
+  /** In the 3D cockpit everything is touched in the cockpit itself; the glass autopilot bar only when asked for (Tab). */
+  private panelWanted = false;
+  private ckHintShown = false;
+
+  /** What a touch on each part of the flight deck operates (pedestal, overhead, main panel). */
+  private zoneSpec(z: 'pedestal' | 'overhead' | 'panel'): { title: string; items: ZoneItem[] } {
+    const ac = this.ac!, f = this.fcs, s = this.sys, c = this.controls, ck = this.cockpit;
+    const A = (a: string) => () => this.action(a);
+    const sw = (k: 'nav' | 'beacon' | 'strobe' | 'landing' | 'taxi' | 'battery' | 'avionics' | 'apu' | 'seatbelt' | 'antiIce' | 'fuelPump', label: string): ZoneItem =>
+      ({ label: () => label, on: () => !!s.sw[k], press: () => { s.sw[k] = !s.sw[k]; this.cockpit.refreshOverhead(); } });
+    const thr = () => (f.athr !== 'OFF' ? ac.engineCmd[0]?.throttle ?? 0 : c.throttle);
+    if (z === 'pedestal') return {
+      title: ac.isRotor ? '콜렉티브 · 엔진' : '페데스털 — 스로틀 · 플랩 · 브레이크',
+      items: [
+        ac.isRotor
+          ? { label: () => `COLL ${Math.round(c.collective * 100)}%`, slider: { get: () => c.collective, set: v => { c.collective = v; } } }
+          : { label: () => `THR ${Math.round(thr() * 100)}%${f.athr !== 'OFF' ? ' A/T' : ''}`, slider: { get: thr, set: v => { if (f.athr !== 'OFF') { f.athr = 'OFF'; toast('A/THR 해제 — 수동 스로틀'); } c.throttle = v; } } },
+        { label: () => 'IDLE', press: () => { if (f.athr !== 'OFF') f.athr = 'OFF'; c.throttle = 0; } },
+        { label: () => 'TO/GA', on: () => f.vert === 'TOGA', press: A('toga') },
+        { label: () => 'A/THR', on: () => f.athr !== 'OFF', press: A('athr') },
+        { label: () => 'REV', on: () => c.reverse, press: A('rev-toggle') },
+        { label: () => 'FLAP ▲', press: A('flaps-up') },
+        { label: () => `FLAP ${ac.flapLabel}`, on: () => ac.flapIdx > 0 },
+        { label: () => 'FLAP ▼', press: A('flaps-down') },
+        { label: () => `GEAR ${ac.gearDown ? 'DOWN' : 'UP'}`, on: () => ac.gearDown, press: A('gear') },
+        { label: () => (ac.speedbrake > 0 ? 'SPD BRK ON' : 'SPD BRK'), on: () => ac.speedbrake > 0, press: A('spoilers') },
+        { label: () => 'SPLR ARM', on: () => ac.spoilerArm, press: A('spoilers-arm') },
+        { label: () => 'PARK BRK', on: () => ac.parkingBrake, press: A('parking-brake') },
+        { label: () => `AUTOBRK ${['OFF', 'LO', 'MED', 'MAX'][ac.autobrake] ?? ''}`, on: () => ac.autobrake > 0, press: () => { ac.autobrake = (ac.autobrake + 1) % 4; } },
+        { label: () => `TRIM ${(ac.trim * 100).toFixed(0)} −`, press: () => { ac.trim = clamp(ac.trim - 0.03, -1, 1); } },
+        { label: () => 'TRIM +', press: () => { ac.trim = clamp(ac.trim + 0.03, -1, 1); } },
+        { label: () => 'ENG START', on: () => ac.engines.some(e => e.running), press: A('autostart') },
+        { label: () => 'ENG STOP', press: A('shutdown') },
+        { label: () => 'PUSHBACK', on: () => this.push.on, press: A('pushback') },
+      ],
+    };
+    if (z === 'overhead') return {
+      title: '오버헤드 — 전원 · 조명 · 엔진',
+      items: [
+        sw('battery', 'BATTERY'), sw('avionics', 'AVIONICS'), sw('apu', 'APU'), sw('fuelPump', 'FUEL PUMP'),
+        sw('nav', 'NAV LT'), sw('beacon', 'BEACON'), sw('strobe', 'STROBE'), sw('landing', 'LAND LT'),
+        sw('taxi', 'TAXI LT'), sw('seatbelt', 'SEAT BELT'), sw('antiIce', 'ANTI-ICE'),
+        { label: () => 'ALL LIGHTS', press: A('lights') },
+        { label: () => 'AUTO START', on: () => ac.engines.some(e => e.running), press: A('autostart'), wide: true },
+        { label: () => 'SHUTDOWN', press: A('shutdown'), wide: true },
+      ],
+    };
+    return {
+      title: '계기판 — 기어 · 기압 · 화면',
+      items: [
+        { label: () => `GEAR ${ac.gearDown ? 'DOWN' : 'UP'}`, on: () => ac.gearDown, press: A('gear') },
+        { label: () => `AUTOBRK ${['OFF', 'LO', 'MED', 'MAX'][ac.autobrake] ?? ''}`, on: () => ac.autobrake > 0, press: () => { ac.autobrake = (ac.autobrake + 1) % 4; } },
+        { label: () => 'MASTER CAUT', on: () => s.masterCaution || s.masterWarning, press: A('master-ack') },
+        { label: () => 'CHECKLIST', press: A('checklist') },
+        { label: () => `BARO ${s.baroStd ? 'STD' : s.baroHpa} −`, press: () => ck.knob('baro', -1) },
+        { label: () => 'BARO +', press: () => ck.knob('baro', 1) },
+        { label: () => 'STD', on: () => s.baroStd, press: A('baro-std') },
+        { label: () => `MINS ${s.minimums}`, press: () => ck.knob('mins', 1) },
+        { label: () => `ND ${this.av.ndRange}NM −`, press: () => ck.knob('rng', -1) },
+        { label: () => 'ND +', press: () => ck.knob('rng', 1) },
+        { label: () => `ND ${this.av.ndMode}`, press: A('ndmode') },
+        { label: () => 'FMS', press: A('fms') },
+      ],
+    };
+  }
   private tapStart: { x: number; y: number; t: number } | null = null;
   cfg: FlightConfig | null = null;
   weather!: WeatherState;
@@ -282,6 +347,7 @@ class App {
     this.menu = new Menu($('menu'), this.db, this.controls);
     const s = this.menu.settings;
     this.world = new World($('world'), this.db, { imagery: s.imagery, googleKey: s.googleKey, ionToken: s.ionToken, photoreal: s.photoreal, shadows: s.shadows, quality: s.quality });
+    this.world.setLookOn(s.look !== false);
     let lastIssue = -Infinity; // never suppress the very first render-issue toast (e.g. right at boot)
     this.world.onRenderIssue = (msg, fatal) => {
       if (fatal) { loading(`그래픽 오류로 렌더링을 계속할 수 없습니다: ${msg}`); document.querySelector<HTMLElement>('#loading .spinner')?.style.setProperty('display', 'none'); return; }
@@ -302,8 +368,8 @@ class App {
       equipment: () => this.ground.kind, setEquipment: k => this.setEquipment(k), pushback: () => { if (!this.push.on) { this.push.done = false; this.startPushback(); } },
       refuel: kg => { if (this.ac) { this.ac.fuel = kg; toast(`급유 완료: ${Math.round(kg).toLocaleString()} kg`); } },
       guide: () => this.world.guideOn, setGuide: on => { this.world.guideOn = on; this.menu.settings.routeGuide = on; this.menu.saveSettings(); },
-      graphics: () => ({ quality: this.menu.settings.quality, shadows: this.menu.settings.shadows }),
-      setGraphics: (q, sh) => { const st = this.menu.settings; st.quality = q; st.shadows = sh; this.menu.saveSettings(); this.menu.onGraphics(st); toast(`그래픽: ${({ low: '낮음', medium: '중간', high: '높음', ultra: '울트라' })[q]}${sh ? ' · 그림자' : ''}`); },
+      graphics: () => ({ quality: this.menu.settings.quality, shadows: this.menu.settings.shadows, look: this.menu.settings.look !== false }),
+      setGraphics: (q, sh, look) => { const st = this.menu.settings; st.quality = q; st.shadows = sh; st.look = look; this.menu.saveSettings(); this.menu.onGraphics(st); toast(`그래픽: ${({ low: '낮음', medium: '중간', high: '높음', ultra: '울트라' })[q]}${sh ? ' · 그림자' : ''}`); },
       scenery: () => this.world.scenery.enabled, setScenery: on => { this.world.scenery.enabled = on; this.menu.settings.airportScenery = on; this.menu.saveSettings(); },
       cruiseFt: () => this.cfg?.cruiseFt ?? 35000,
       runwayLen: (apt, arr) => { if (!apt || !this.cfg) return 0; const id = arr ? this.cfg.arrRwy : this.cfg.depRwy; const e = runwayEnds(apt).find(r => r.end.ident === id) ?? [...runwayEnds(apt)].sort((a, b) => b.rw.length - a.rw.length)[0]; return e ? e.rw.length : 0; },
@@ -334,6 +400,7 @@ class App {
     this.menu.onDiag = () => this.toggleDiag();
     this.menu.onGraphics = st => {
       this.sound.volume = st.volume;
+      this.world.setLookOn(st.look !== false);
       this.world.opts = { ...this.world.opts, ...st };
       this.world.applyGraphics(st.quality, st.shadows);
     };
@@ -699,7 +766,9 @@ class App {
       case 'ndmode': this.av.ndMode = this.av.ndMode === 'ARC' ? 'ROSE' : this.av.ndMode === 'ROSE' ? 'PLAN' : 'ARC'; break;
       case 'navsrc': this.av.navSource = this.av.navSource === 'GPS' ? 'VOR' : this.av.navSource === 'VOR' ? 'LOC' : 'GPS'; toast(`NAV SOURCE ${this.av.navSource}`); break;
       case 'reset': if (this.cfg) void this.startFlight(this.cfg); break;
-      case 'panel-toggle': document.body.classList.toggle('nopanel'); this.layout(); break;
+      case 'panel-toggle':
+        if (this.world.view === 'cockpit' && this.world.deck3d) this.panelWanted = !this.panelWanted;
+        document.body.classList.toggle('nopanel'); this.layout(); break;
       case 'rev-toggle': this.controls.reverse = !this.controls.reverse; break;
     }
     this.cockpit?.refreshMcp();
@@ -716,7 +785,12 @@ class App {
     this.world.head.zoom = 1;
     document.querySelectorAll<HTMLButtonElement>('#viewSeg button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
     const cockpit = v === 'cockpit';
-    document.body.classList.toggle('nopanel', !cockpit);
+    // the 3D cockpit is operated by touching it: the glass bar only on request (Tab / 패널 button)
+    document.body.classList.toggle('nopanel', !cockpit || (this.world.deck3d && !this.panelWanted));
+    if (cockpit && this.world.deck3d && !this.panelWanted && !this.ckHintShown) {
+      this.ckHintShown = true;
+      toast('조종석을 직접 터치하세요 — 위: 오버헤드 · 가운데 아래: 스로틀/플랩/기어 · 유리창 아래: 자동비행 · 화면: PFD/ND (Tab: 패널 표시)');
+    }
     this.layout();
   }
   private layout() {
@@ -770,7 +844,7 @@ class App {
       this.menu.settings.deck3d = this.world.deck3d; this.menu.saveSettings();
       $('btnDeck').textContent = deckLabel(this.world.deck3d);
       this.world.head.pitch = this.defaultHeadPitch();
-      if (this.world.view !== 'cockpit') this.setView('cockpit'); else this.layout();
+      this.setView('cockpit');
     };
     $('errBannerOpen').onclick = () => { $('diagwin').classList.remove('hidden'); this.diagT = 0; this.updateDiag(); };
     $('btnTouch').onclick = () => { this.touch.setEnabled(!this.touch.enabled); $('btnTouch').classList.toggle('on', this.touch.enabled); toast(`터치 조종 ${this.touch.enabled ? 'ON' : 'OFF'}`); };
@@ -797,7 +871,7 @@ class App {
       const s = this.tapStart;
       this.tapStart = null;
       if (!s || !this.flying || this.world.view !== 'cockpit' || e.button > 0) return;
-      if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 8 || performance.now() - s.t > 500) return;
+      if (Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10 || performance.now() - s.t > 800) return;
       const r = el.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
       // fingers are big and digit windows small: look a little around the tap for a knob window
       let hit = this.world.cockpitHit(x, y);

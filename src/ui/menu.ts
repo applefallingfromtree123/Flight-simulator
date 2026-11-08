@@ -39,6 +39,8 @@ export interface Settings {
   deck3d: boolean;
   /** Optional route guidance line (flight plan in the sky, taxi route on the ground). */
   routeGuide?: boolean;
+  /** Sharpen + colour grade pass (default on). */
+  look?: boolean;
   /** Our own airport buildings, jet bridges, taxiways and roads. */
   airportScenery?: boolean;
 }
@@ -613,6 +615,7 @@ export class Menu {
         <div class="frow"><div class="field"><label>품질</label><select id="q"><option value="low">낮음</option><option value="medium">중간</option><option value="high">높음 (레티나 해상도 · MSAA · 그림자)</option><option value="ultra">울트라 (최대 해상도 · 4K 그림자)</option></select></div>
         <div class="field"><label>그림자</label><select id="sh"><option value="0">끔</option><option value="1">켬</option></select></div></div>
         <div class="field"><label>음량 <b id="volV">${Math.round(s.volume * 100)}%</b></label><input id="vol" type="range" min="0" max="100" value="${Math.round(s.volume * 100)}"></div>
+        <div class="field"><label><input type="checkbox" id="look" ${s.look !== false ? 'checked' : ''}> 향상된 화질 — 선명화 · 색보정 · 비네트 (MSFS 스타일)</label></div>
         <div class="field"><label><input type="checkbox" id="mix" ${s.autoMixture ? 'checked' : ''}> 피스톤 엔진 자동 혼합비 (Auto-lean)</label></div>
       </div>
       <div class="sec"><h3>조이스틱 / HOTAS / 러더 페달</h3>
@@ -632,9 +635,11 @@ export class Menu {
       s.quality = ($('q') as HTMLSelectElement).value as never;
       s.shadows = ($('sh') as HTMLSelectElement).value === '1';
       s.autoMixture = $<HTMLInputElement>('mix').checked;
+      s.look = $<HTMLInputElement>('look').checked;
       save('sky.settings', s);
       this.onGraphics(s);
     };
+    $<HTMLInputElement>('look').onchange = live;
     ($('q') as HTMLSelectElement).onchange = live;
     ($('sh') as HTMLSelectElement).onchange = live;
     $<HTMLInputElement>('mix').onchange = live;

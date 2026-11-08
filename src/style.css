@@ -402,3 +402,7 @@ body.c3d #touch { bottom: calc(var(--panelH) + 14px); }
 #ckpop .ck-modes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
 #ckpop .ck-modes button.on { background: rgba(60, 200, 120, .28); outline: 1px solid rgba(80, 230, 140, .7); }
 #ckpop .ck-note { font-size: 10px; opacity: .55; margin-top: 6px; text-align: center; }
+
+#ckpop .ck-slider { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; margin: 6px 0; font: 700 13px "B612 Mono", monospace; }
+#ckpop .ck-slider input { width: 100%; accent-color: #4fb4ff; height: 30px; }
+#ckpop .ck-modes button.wide { grid-column: span 2; }

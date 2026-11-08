@@ -84,7 +84,11 @@ function brightenSkyLight(model: Cesium.Model, brightness: number) {
 }
 export type ViewMode = 'cockpit' | 'cockpit-hud' | 'chase' | 'tower' | 'flyby' | 'free';
 
+export type CockpitZone = 'overhead' | 'pedestal' | 'glareshield' | 'panel';
+
 export class World {
+  /** Cockpit type of the loaded aircraft (for the touch zones). */
+  cockpitKind = '';
   viewer: Cesium.Viewer;
   scene: Cesium.Scene;
   elevation: ElevationService;
@@ -176,6 +180,7 @@ export class World {
     this.scenery = new AirportScenery(s, db, this.elevation);
     this.scenery.treeBudget = [0, 2500, 5000, 9000][this.tier];
     this.effects = new Effects(s);
+    this.effects.setLook(this.lookOn, this.tier);
     this.scenery.onModel = m => { this.sceneryModel = m; };
     this.cockpit3d = new Cockpit3D(s);
     s.renderError.addEventListener((_scene, err) => this.handleRenderError(err));
@@ -184,6 +189,9 @@ export class World {
   }
 
   private tier = 1;
+  /** Sharpen + colour grade ("향상된 화질"). */
+  lookOn = true;
+  setLookOn(on: boolean) { this.lookOn = on; this.effects.setLook(on, this.tier); }
   /** Sunlight on the clouds (1 day .. ~0.06 night). */
   private cloudDim = 1;
   get qualityTier() { return this.tier; }
@@ -210,6 +218,11 @@ export class World {
     v.shadowMap.softShadows = tier >= 1;
     v.shadowMap.size = tier >= 3 ? 4096 : 2048;
     try { s.msaaSamples = tier >= 2 ? 4 : 1; } catch { /* WebGL1: no MSAA */ }
+    // a deeper, clearer sky and richer aerial perspective (MSFS-like), and the sharpen + colour-grade pass
+    if (s.skyAtmosphere) { s.skyAtmosphere.saturationShift = 0.22; s.skyAtmosphere.brightnessShift = -0.06; s.skyAtmosphere.hueShift = 0.0; }
+    s.atmosphere.saturationShift = 0.08;
+    s.atmosphere.brightnessShift = 0.02;
+    this.effects?.setLook(this.lookOn, tier);
     if (this.scenery) this.scenery.treeBudget = [0, 2500, 5000, 9000][tier];
     const bloom = s.postProcessStages.bloom;
     bloom.uniforms.contrast = 119;
@@ -449,7 +462,8 @@ export class World {
    * Clickable cockpit: what is under a tap in the cockpit view. The procedural deck's FCU/MCP strip resolves to a
    * zone (window −/+/value, mode button); a real cockpit's autopilot digit windows, PFD and ND resolve to a group.
    */
-  cockpitHit(x: number, y: number): { kind: 'fcu'; u: number; v: number } | { kind: 'group'; group: 'spd' | 'hdg' | 'alt' | 'vs' } | { kind: 'pfd' | 'nd' | 'eicas' } | null {
+  cockpitHit(x: number, y: number): { kind: 'fcu'; u: number; v: number } | { kind: 'group'; group: 'spd' | 'hdg' | 'alt' | 'vs' } | { kind: 'pfd' | 'nd' | 'eicas' }
+    | { kind: 'zone'; zone: CockpitZone } | { kind: 'gear' } | null {
     if (this.view !== 'cockpit') return null;
     const pos = new Cesium.Cartesian2(x, y);
     let picks: { primitive?: unknown; detail?: { node?: { name?: string; node?: { name?: string } } } }[] = [];
@@ -468,16 +482,52 @@ export class World {
         if (scr.src === 'pfd' || scr.src === 'nd' || scr.src === 'eicas') return { kind: scr.src };
         continue;
       }
-      // a real cockpit: autopilot digit windows are separate nodes bound to the selected values
+      // a real cockpit: autopilot digit windows and levers are separate nodes bound to sim values
       const fg = this.fg;
       if (fg && p.primitive === fg.interior) {
         const name = p.detail?.node?.node?.name ?? p.detail?.node?.name ?? '';
         const t = (fg.m.texLive ?? []).find(tl => tl.interior && tl.nodes.includes(name));
         if (t && groupOf[t.prop]) return { kind: 'group', group: groupOf[t.prop] };
-        return null;  // the panel itself: nothing to press there
+        const lv = (fg.m.live ?? []).find(l => l.interior && l.node === name);
+        const prop = lv?.anims[0]?.prop ?? '';
+        if (prop === 'gear-lever') return { kind: 'gear' };
+        if (/^throttle|speedbrake|mixture|prop-lever|elevator-trim/.test(prop)) return { kind: 'zone', zone: 'pedestal' };
+        const z = this.zoneAt(pos);
+        return z ? { kind: 'zone', zone: z } : null;
+      }
+      // the procedural flight deck: by where on it
+      if (p.primitive === this.cockpit3d.model) {
+        const z = this.zoneAt(pos);
+        return z ? { kind: 'zone', zone: z } : null;
       }
     }
     return null;
+  }
+
+  /**
+   * Which part of the flight deck a tap landed on, from the tapped point relative to the pilot's eye (aircraft
+   * frame: fwd, left, up): the overhead panel above, the pedestal / centre console low between the seats (side
+   * consoles in a fighter), the glareshield (autopilot) straight ahead, or the main instrument panel.
+   */
+  private zoneAt(pos: Cesium.Cartesian2): CockpitZone | null {
+    // by the direction of the tap from the pilot's eye (aircraft frame: x fwd, y left, z up) — depth picking is
+    // unreliable this close to the camera, and the tap has already been confirmed to land on the cockpit itself
+    const ray = this.scene.camera.getPickRay(pos);
+    if (!ray) return null;
+    const inv = Cesium.Matrix4.inverseTransformation(this.acMatrix, new Cesium.Matrix4());
+    const d = Cesium.Cartesian3.normalize(Cesium.Matrix4.multiplyByPointAsVector(inv, ray.direction, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+    const e = Cesium.Matrix4.multiplyByPoint(inv, this.scene.camera.positionWC, new Cesium.Cartesian3());
+    const elev = Math.asin(Math.max(-1, Math.min(1, d.z))) * 180 / Math.PI;
+    const az = Math.atan2(d.y, d.x) * 180 / Math.PI;           // + left, − right
+    const centred = Math.abs(e.y) < 0.2;                         // single seat / tandem: consoles on both sides
+    if (elev > 22) return 'overhead';
+    if (centred && elev < -24 && Math.abs(az) > 22) return az > 0 ? 'pedestal' : 'overhead';   // fighter: throttle left, systems right
+    const towardCentre = e.y > 0 ? -az : az;                     // the centre console is to the right of the captain
+    if (!centred && elev < -24 && towardCentre > 6 && towardCentre < 80) return 'pedestal';
+    if (elev < -50) return 'pedestal';
+    if (Math.abs(az) > 70) return null;                          // side walls
+    if (elev >= -15) return 'glareshield';
+    return 'panel';
   }
 
   /** Ground equipment (jet bridge, stairs, people) — excluded when measuring the ground. */
@@ -491,6 +541,7 @@ export class World {
 
   // ───────────────────────── aircraft model ─────────────────────────
   async loadAircraft(ac: Aircraft, liveryId?: string) {
+    this.cockpitKind = ac.def.cockpit;
     if (this.model) { this.scene.primitives.remove(this.model); this.model = null; }
     if (this.fg?.interior) this.scene.primitives.remove(this.fg.interior);
     this.fg = null;
@@ -1093,6 +1144,7 @@ export class World {
     { name: '비행운', off: () => this.effects.disable('trails') },
     { name: '물보라·먼지', off: () => this.effects.disable('wash') },
     { name: '번개', off: () => this.effects.disable('flash') },
+    { name: '색보정·선명화', off: () => this.effects.disable('grade') },
     { name: '탑승교·계단차 모델', off: () => { this.groundModelsOff = true; for (const o of this.groundObjects) (o as { show?: boolean }).show = false; } },
     { name: '그림자', off: () => { this.viewer.shadows = false; } },
     { name: 'HDR', off: () => { this.scene.highDynamicRange = false; } },

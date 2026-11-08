@@ -3,9 +3,14 @@
 import type { Cockpit } from './cockpit.ts';
 import type { FCS } from '../sim/fcs.ts';
 import { fcuHit, type FcuGroup } from '../world/cockpit3d.ts';
+import type { CockpitZone } from '../world/scene.ts';
 
-type Target = FcuGroup | 'ap' | 'nd';
-const TITLE: Record<Target, string> = { spd: '속도 SPD', hdg: '방향 HDG', alt: '고도 ALT', vs: '승강률 V/S', ap: '자동비행 (MCP)', nd: '항법 화면 ND' };
+/** One control in a cockpit zone pop-up: a button (with a lit state) or a slider. */
+export interface ZoneItem { label: () => string; on?: () => boolean; press?: () => void; slider?: { get: () => number; set: (v: number) => void }; wide?: boolean }
+export type ZoneSpec = (z: Exclude<CockpitZone, 'glareshield'>) => { title: string; items: ZoneItem[] };
+
+type Target = FcuGroup | 'ap' | 'nd' | Exclude<CockpitZone, 'glareshield'>;
+const TITLE: Record<Target, string> = { spd: '속도 SPD', hdg: '방향 HDG', alt: '고도 ALT', vs: '승강률 V/S', ap: '자동비행 (MCP)', nd: '항법 화면 ND', pedestal: '페데스털', overhead: '오버헤드', panel: '계기판' };
 const STEPS: Record<FcuGroup, [number, number]> = { spd: [1, 10], hdg: [1, 10], alt: [100, 1000], vs: [100, 500] };
 const MODES: Record<FcuGroup, [string, string][]> = {
   spd: [['spdmng', 'SPD MNG'], ['spdmach', 'SPD/MACH'], ['flc', 'FLC'], ['athr', 'A/THR']],
@@ -19,7 +24,8 @@ export class CockpitClick {
   private target: Target | null = null;
   private timer = 0;
 
-  constructor(private cockpit: () => Cockpit | null, private fcs: () => FCS | null, private click: () => void) {
+  private zone: ReturnType<ZoneSpec> | null = null;
+  constructor(private cockpit: () => Cockpit | null, private fcs: () => FCS | null, private click: () => void, private zones: ZoneSpec) {
     this.el = document.createElement('div');
     this.el.id = 'ckpop';
     this.el.className = 'hidden';
@@ -47,6 +53,8 @@ export class CockpitClick {
       return true;
     }
     this.click();
+    if (hit.kind === 'gear') { ck.press('gear'); return true; }
+    if (hit.kind === 'zone') { this.show(hit.zone === 'glareshield' ? 'ap' : hit.zone, x, y); return true; }
     this.show(hit.kind === 'group' ? hit.group : hit.kind === 'nd' ? 'nd' : 'ap', x, y);
     return true;
   }
@@ -85,7 +93,14 @@ export class CockpitClick {
     const t = this.target;
     if (!t) return;
     let body = '';
-    if (t === 'nd') {
+    this.zone = null;
+    if (t === 'pedestal' || t === 'overhead' || t === 'panel') {
+      const z = this.zone = this.zones(t);
+      body = z.items.map((it, i) => it.slider
+        ? `<div class="ck-slider"><span data-zl="${i}"></span><input type="range" min="0" max="100" data-zs="${i}"></div>`
+        : '').join('') +
+        `<div class="ck-modes">${z.items.map((it, i) => it.slider ? '' : `<button data-z="${i}" class="${it.wide ? 'wide' : ''}"></button>`).join('')}</div>`;
+    } else if (t === 'nd') {
       body = `<div class="ck-row"><button data-k="rng" data-d="-1">RANGE −</button><div class="ck-val" data-v="rng"></div><button data-k="rng" data-d="1">RANGE +</button></div>
         <div class="ck-modes"><button data-a="ndmode">ND MODE</button><button data-a="navsrc">NAV SRC</button></div>`;
     } else if (t === 'ap') {
@@ -95,12 +110,14 @@ export class CockpitClick {
     } else {
       body = this.groupHtml(t) + `<div class="ck-modes">${[['ap', 'AP'], ...MODES[t]].map(([a, l]) => `<button data-a="${a}">${l}</button>`).join('')}</div>`;
     }
-    this.el.innerHTML = `<div class="ck-head"><b>${TITLE[t]}</b><button class="ck-x" data-close>✕</button></div>${body}
-      <div class="ck-note">값을 눌러 직접 입력 · 데스크톱은 창 위에서 마우스 휠</div>`;
+    this.el.innerHTML = `<div class="ck-head"><b>${this.zone?.title ?? TITLE[t]}</b><button class="ck-x" data-close>✕</button></div>${body}
+      ${this.zone ? '' : '<div class="ck-note">값을 눌러 직접 입력 · 데스크톱은 창 위에서 마우스 휠</div>'}`;
     const ck = this.cockpit();
     this.el.querySelector<HTMLButtonElement>('[data-close]')!.onclick = () => this.close();
     this.el.querySelectorAll<HTMLButtonElement>('[data-k]').forEach(b => b.onclick = () => { ck?.knob(b.dataset.k!, Math.sign(+b.dataset.d!), Math.abs(+b.dataset.d!) > 1); this.click(); this.refresh(); });
     this.el.querySelectorAll<HTMLButtonElement>('[data-a]').forEach(b => b.onclick = () => { ck?.press(b.dataset.a!); this.click(); this.refresh(); });
+    this.el.querySelectorAll<HTMLButtonElement>('[data-z]').forEach(b => b.onclick = () => { this.zone?.items[+b.dataset.z!].press?.(); this.click(); this.refresh(); });
+    this.el.querySelectorAll<HTMLInputElement>('[data-zs]').forEach(r => r.oninput = () => { this.zone?.items[+r.dataset.zs!].slider?.set(+r.value / 100); this.refresh(); });
     this.el.querySelectorAll<HTMLElement>('[data-v]').forEach(v => v.onclick = () => {
       const id = v.dataset.v!;
       if (id === 'rng') return;
@@ -113,6 +130,13 @@ export class CockpitClick {
   private refresh() {
     const ck = this.cockpit(), f = this.fcs();
     if (!ck || !f || !this.target) return;
+    if (this.zone) {
+      const z = this.zone;
+      this.el.querySelectorAll<HTMLButtonElement>('[data-z]').forEach(b => { const it = z.items[+b.dataset.z!]; const l = it.label(); if (b.textContent !== l) b.textContent = l; b.classList.toggle('on', !!it.on?.()); });
+      this.el.querySelectorAll<HTMLInputElement>('[data-zs]').forEach(r => { const it = z.items[+r.dataset.zs!]; if (document.activeElement !== r) r.value = String(Math.round((it.slider!.get()) * 100)); });
+      this.el.querySelectorAll<HTMLElement>('[data-zl]').forEach(s => { const l = z.items[+s.dataset.zl!].label(); if (s.textContent !== l) s.textContent = l; });
+      return;
+    }
     this.el.querySelectorAll<HTMLElement>('[data-v]').forEach(v => { const t = ck.knobValue(v.dataset.v!); if (v.textContent !== t) v.textContent = t; });
     const on: Record<string, boolean> = {
       ap: f.ap, athr: f.athr !== 'OFF', fd: f.fd, hdg: f.lat === 'HDG', nav: f.lat === 'NAV' || f.latArmed === 'NAV', loc: f.lat === 'LOC' || f.latArmed === 'LOC',

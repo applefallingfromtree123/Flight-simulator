@@ -105,6 +105,36 @@ void main() {
   out_FragColor = vec4(c.rgb + vec3(0.85, 0.9, 1.0) * flash * (0.35 + 0.65 * dot(c.rgb, vec3(0.33))), c.a);
 }`;
 
+/**
+ * The "look": contrast-adaptive sharpening (crisper photogrammetry and imagery, like MSFS's sharpen filter), then a
+ * filmic grade — richer colour, a gentle S-curve, warm highlights / cool shadows — and a soft vignette.
+ */
+const GRADE_FS = /* glsl */ `
+uniform sampler2D colorTexture;
+uniform float sharp;
+uniform float sat;
+uniform float contrast;
+uniform float warmth;
+uniform float vignette;
+in vec2 v_textureCoordinates;
+void main() {
+  vec2 uv = v_textureCoordinates;
+  vec2 px = 1.0 / czm_viewport.zw;
+  vec3 c = texture(colorTexture, uv).rgb;
+  vec3 n = texture(colorTexture, uv + vec2(0.0, px.y)).rgb, s = texture(colorTexture, uv - vec2(0.0, px.y)).rgb;
+  vec3 e = texture(colorTexture, uv + vec2(px.x, 0.0)).rgb, w = texture(colorTexture, uv - vec2(px.x, 0.0)).rgb;
+  vec3 mn = min(c, min(min(n, s), min(e, w))), mx = max(c, max(max(n, s), max(e, w)));
+  vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-3)), 0.0, 1.0));   // less where it would ring
+  c = clamp(c + (c - (n + s + e + w) * 0.25) * sharp * amp * 2.0, 0.0, 1.0);
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  c = mix(vec3(l), c, sat);
+  c = mix(c, c * c * (3.0 - 2.0 * c), contrast);                               // S-curve
+  c += warmth * (vec3(0.035, 0.012, -0.022) * smoothstep(0.45, 1.0, l) + vec3(-0.012, 0.0, 0.03) * (1.0 - smoothstep(0.0, 0.45, l)));
+  vec2 d = uv - 0.5;
+  c *= 1.0 - vignette * dot(d, d) * 1.5;
+  out_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`;
+
 /** Soft round sprite for spray / dust particles. */
 function puffImage(): HTMLCanvasElement {
   const cv = document.createElement('canvas');
@@ -125,7 +155,7 @@ export class Effects {
   private trailT = 0;
   private u = { time: 0, intensity: 0, snow: 0, cockpit: 0, airspeed: 0 };
   /** Switched off after render errors (see World.handleRenderError). */
-  off = { precip: false, flare: false, trails: false, wash: false, flash: false };
+  off = { precip: false, flare: false, trails: false, wash: false, flash: false, grade: false };
   private wash: Cesium.Primitive | null = null;
   private washMat: Cesium.Material | null = null;
   private spray: Cesium.ParticleSystem | null = null;
@@ -134,8 +164,9 @@ export class Effects {
   private nextFlash = 0;
   /** Called on a lightning strike with the delay of its thunder (s). */
   onThunder: (delay: number) => void = () => {};
-  disable(k: 'precip' | 'flare' | 'trails' | 'wash' | 'flash') {
+  disable(k: 'precip' | 'flare' | 'trails' | 'wash' | 'flash' | 'grade') {
     this.off[k] = true;
+    if (k === 'grade' && this.grade) this.grade.enabled = false;
     if (k === 'wash') { if (this.wash) this.wash.show = false; if (this.spray) this.spray.show = false; }
     if (k === 'flash' && this.flashStage) this.flashStage.enabled = false;
     if (k === 'precip') this.precip.enabled = false;
@@ -143,8 +174,22 @@ export class Effects {
     if (k === 'trails') { this.trails.removeAll(); this.trails.show = false; this.engineTrails = []; }
   }
 
+  private grade: Cesium.PostProcessStage | null = null;
+  private g = { sharp: 0.5, sat: 1.24, contrast: 0.4, warmth: 1.4, vignette: 0.45 };
+  /** The look pass: on/off and strength from the graphics quality (tier 0 = off). */
+  setLook(on: boolean, tier: number) {
+    if (!this.grade) return;
+    this.grade.enabled = on && tier >= 1 && !this.off.grade;
+    this.g.sharp = [0, 0.45, 0.6, 0.7][tier] ?? 0.55;
+  }
+
   constructor(private scene: Cesium.Scene) {
     const u = this.u;
+    const g = this.g;
+    this.grade = scene.postProcessStages.add(new Cesium.PostProcessStage({
+      name: 'sky_grade', fragmentShader: GRADE_FS,
+      uniforms: { sharp: () => g.sharp, sat: () => g.sat, contrast: () => g.contrast, warmth: () => g.warmth, vignette: () => g.vignette },
+    })) as Cesium.PostProcessStage;
     this.precip = scene.postProcessStages.add(new Cesium.PostProcessStage({
       name: 'sky_precip', fragmentShader: PRECIP_FS,
       uniforms: { time: () => u.time, intensity: () => u.intensity, snow: () => u.snow, cockpit: () => u.cockpit, airspeed: () => u.airspeed },
